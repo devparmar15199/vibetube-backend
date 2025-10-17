@@ -88,8 +88,6 @@ const userSchema = new Schema<IUser>({
 }, { timestamps: true });
 
 // Indexes
-userSchema.index({ username: 1 });
-userSchema.index({ email: 1 });
 userSchema.index({ isDeleted: 1, isEmailVerified: 1 });
 userSchema.index({ subscribersCount: -1 });
 

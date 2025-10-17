@@ -6,9 +6,7 @@ import { ApiError } from './utils/apiError.ts';
 import { ApiResponse } from './utils/apiResponse.ts';
 
 // Route imports
-import authRoutes from './routes/auth.routes';
-import userRoutes from './routes/user.routes';
-import subscriptionRoutes from './routes/subscription.routes';
+import authRoutes from './routes/auth.routes.ts';
 
 const app = express();
 
@@ -20,8 +18,6 @@ app.use(express.static('public'));
 
 // Routes
 app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/users', userRoutes);
-app.use('/api/v1/subscriptions', subscriptionRoutes);
 
 // Global error handler
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
