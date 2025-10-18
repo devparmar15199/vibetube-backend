@@ -7,6 +7,7 @@ import { ApiResponse } from './utils/apiResponse.ts';
 
 // Route imports
 import authRoutes from './routes/auth.routes.ts';
+import userRoutes from './routes/user.routes.ts';
 
 const app = express();
 
@@ -18,6 +19,7 @@ app.use(express.static('public'));
 
 // Routes
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/users', userRoutes);
 
 // Global error handler
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
