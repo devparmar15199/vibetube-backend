@@ -25,9 +25,6 @@ const subscriptionSchema = new Schema<ISubscription>({
 // Indexes
 subscriptionSchema.index({ subscriber: 1, channel: 1 }, { unique: true });
 
-subscriptionSchema.index({ channel: 1 });   // Get subscribers
-subscriptionSchema.index({ subscriber: 1 });    // Get subscriptions
-
 // Soft delete
 subscriptionSchema.pre('find', function (next) {
     this.find({ isDeleted: { $ne: true } });

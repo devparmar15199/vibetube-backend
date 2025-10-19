@@ -115,19 +115,24 @@ export const registerUser = async (
         const { accessToken, refreshToken } = await getAccessAndRefreshToken(user._id.toString());
         
         // Step 7: Send response
-        return res.status(201).json(
-            ApiResponse.success(
-                {
-                    user: createdUser,
-                    accessToken,
-                    refreshToken
-                },
-                'User registered successfully',
-                201
-            )
-        );
+        return res
+            .status(201)
+            .cookie('accessToken', accessToken, { httpOnly: true, secure: true })
+            .cookie('refreshToken', refreshToken, { httpOnly: true, secure: true })
+            .json(
+                ApiResponse.success(
+                    {
+                        user: createdUser,
+                        accessToken,
+                        refreshToken
+                    },
+                    'User registered successfully',
+                    201
+                )
+            );
     } catch (error) {
-        return res.status(500).json(
+        return res
+            .status(500).json(
             ApiResponse.error(
                 500,
                 null,
@@ -158,12 +163,11 @@ export const loginUser = async (
         }
 
         // Step 2: Find user by username or email
-        const user = await User.findOne({
-            $or: [
-                username ? { username: username.toLowerCase() } : {},
-                email ? { email: email.toLowerCase() } : {},
-            ]
-        }).select('+password');
+        const query: any = {};
+        if (username) query.username = username.toLowerCase();
+        if (email) query.email = email.toLowerCase();
+        
+        const user = await User.findOne(query).select('+password');
 
         if (!user) {
             return res.status(404).json(
@@ -186,13 +190,17 @@ export const loginUser = async (
         const loggedInUser = await User.findById(user._id).select('-password -refreshToken');
 
         // Step 6: Send response
-        return res.status(200).json(
-            ApiResponse.success(
-                { user: loggedInUser, accessToken, refreshToken },
-                'User logged in successfully',
-                200
-            )
-        );
+        return res
+            .status(200)
+            .cookie('accessToken', accessToken, { httpOnly: true, secure: true })
+            .cookie('refreshToken', refreshToken, { httpOnly: true, secure: true })
+            .json(
+                ApiResponse.success(
+                    { user: loggedInUser, accessToken, refreshToken },
+                    'User logged in successfully',
+                    200
+                )
+            );
     } catch (error) {
         return res.status(500).json(
             ApiResponse.error(
@@ -290,4 +298,4 @@ export const refreshToken = async (
             )
         );
     }
-}
+};
