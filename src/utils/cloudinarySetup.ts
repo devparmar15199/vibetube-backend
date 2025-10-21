@@ -3,7 +3,9 @@ import type { UploadApiResponse } from 'cloudinary';
 import fs from 'fs';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: './.env'});
+if (!process.env.NODE_ENV) {
+    dotenv.config({ path: './.env' });
+}
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -18,19 +20,27 @@ export const uploadToCloudinary = async (
 ): Promise<UploadApiResponse | null> => {
     try {
         if (!localFilePath || !fs.existsSync(localFilePath)) {
+            console.warn('File path does not exist:', localFilePath);
             return null;
         }
 
-        const response = await cloudinary.uploader.upload(localFilePath, {
+        const response: UploadApiResponse = await cloudinary.uploader.upload(localFilePath, {
             resource_type: resourceType,
             ...options,
         });
-
-        fs.unlinkSync(localFilePath);
+        
+        // Clean up local file safely
+        fs.unlink(localFilePath, (err) => {
+            if (err) console.error('Failed to delete local file:', err);
+        });
         return response;
-    } catch (error) {
+    } catch (error: any) {
+        console.error('Cloudinary upload error:', error);
+        // Clean up on error
         if (fs.existsSync(localFilePath)) {
-            fs.unlinkSync(localFilePath);
+            fs.unlink(localFilePath, (err) => {
+                if (err) console.error('Failed to delete local file on error:', err);
+            });
         }
         return null;
     }

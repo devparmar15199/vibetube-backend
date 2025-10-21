@@ -9,24 +9,23 @@ import {
     getUserVideos,
     searchUsers,
     changePassword
-} from '../controllers/user.controller.ts';
-import { verifyToken } from '../middlewares/auth.middleware.ts';
-import { singleAvatar, singleCoverImage } from '../middlewares/multer.middleware.ts';
+} from '../controllers/user.controller';
+import { verifyToken } from '../middlewares/auth.middleware';
+import { singleAvatar, singleCoverImage } from '../middlewares/multer.middleware';
 
 const router = Router();
 
-// Get my profile
+// Authenticated user routes
 router.get('/me', verifyToken, getMyProfile);
 router.patch('/me', verifyToken, updateProfile);
-router.get('/search', searchUsers);
 router.post('/change-password', verifyToken, changePassword);
 router.patch('/avatar', verifyToken, singleAvatar, updateAvatar);
 router.patch('/cover-image', verifyToken, singleCoverImage, updateCoverImage);
 router.get('/my-videos', verifyToken, getMyVideos);
 
-
+// Public user routes
+router.get('/search', searchUsers);
 router.get('/:id', getUserById);
 router.get('/:id/videos', getUserVideos);
-
 
 export default router;

@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { User } from '../models/user.model.ts';
-import { ApiResponse } from '../utils/apiResponse.ts';
+import { User, type IUser } from '../models/user.model';
+import { ApiResponse } from '../utils/apiResponse';
 
 interface JWTPayload {
     _id: string;
@@ -33,7 +33,7 @@ export const verifyToken = async (
             );
         }
 
-        // Attach user to request object
+        // Attach typed user to request object
         req.user = user;
         next();
     } catch (error) {

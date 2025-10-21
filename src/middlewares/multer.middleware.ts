@@ -49,6 +49,12 @@ export const authUpload = uploadImage.fields([
     { name: 'coverImage', maxCount: 1 }
 ]);
 
+export const videoUpload = uploadVideo.fields([
+    { name: 'videoFile', maxCount: 1 },
+    { name: 'thumbnail', maxCount: 1 }
+]);
+
 export const singleAvatar = uploadImage.single('avatar');
 export const singleCoverImage = uploadImage.single('coverImage');
 export const singleVideo = uploadVideo.single('videoFile');
+export const singleThumbnail = uploadImage.single('thumbnail');

@@ -8,8 +8,8 @@ import {
     isSubscribed, 
     getSubscriptionFeed,
     toggleSubscription
-} from '../controllers/subscription.controller.ts';
-import { verifyToken } from "../middlewares/auth.middleware.ts";
+} from '../controllers/subscription.controller';
+import { verifyToken } from "../middlewares/auth.middleware";
 
 const router = Router();
 

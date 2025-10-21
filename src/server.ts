@@ -1,18 +1,28 @@
 import dotenv from 'dotenv';
-import connectDB from './db/dbSetup.ts';
-import app from './app.ts';
+import connectDB from './db/dbSetup';
+import app from './app';
 
-dotenv.config({ path: './.env' });
+if (!process.env.NODE_ENV) {
+    dotenv.config({ path: './.env' });
+}
 
 const startServer = async () => {
     try {
         await connectDB();
         const PORT = parseInt(process.env.PORT || '3001', 10);
-        app.listen(PORT, () => {
+        const server = app.listen(PORT, () => {
             console.log(`Server running on http://localhost:${PORT}`);
         });
-    } catch (error) {
-        console.error('Failed to start server:', error);
+
+        // Graceful shutdown
+        process.on('SIGTERM', () => {
+            console.log('SIGTERM received. Shutting down gracefully...');
+            server.close(() => {
+                console.log('Process terminated.');
+            });
+        });
+    } catch (error: any) {
+        console.error('Failed to start server:', error.message);
         process.exit(1);
     }
 };

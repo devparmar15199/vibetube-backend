@@ -4,9 +4,9 @@ import {
     loginUser,
     logoutUser,
     refreshToken
-} from '../controllers/auth.controller.ts';
-import { verifyToken } from '../middlewares/auth.middleware.ts';
-import { authUpload } from '../middlewares/multer.middleware.ts';
+} from '../controllers/auth.controller';
+import { verifyToken } from '../middlewares/auth.middleware';
+import { authUpload } from '../middlewares/multer.middleware';
 
 const router = Router();
 

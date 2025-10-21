@@ -1,22 +1,36 @@
+export interface ApiResponseMeta {
+    pagination?: {
+        current: number;
+        pageSize: number;
+        total: number;
+        totalPages: number;
+    };
+}
+
 export class ApiResponse<T = any> {
     public statusCode: number;
     public data: T;
     public message: string;
     public success: boolean;
+    public meta?: ApiResponseMeta;
 
-    constructor(statusCode: number, data: T, message: string = 'Success') {
+    constructor(statusCode: number, data: T, message: string = 'Success', meta?: ApiResponseMeta) {
         this.statusCode = statusCode;
         this.data = data;
         this.message = message;
         this.success = statusCode < 400;
+        this.meta = meta;
     }
 
     static success<T = any>(
         data: T,
         message: string = 'Success',
-        statusCode: number = 200
+        statusCode: number = 200,
+        meta?: ApiResponseMeta
     ): ApiResponse<T> {
-        return new ApiResponse(statusCode, data, message);
+        const response = new ApiResponse(statusCode, data, message, meta);
+        response.success = true;
+        return response;
     }
 
     static error<T = any>(

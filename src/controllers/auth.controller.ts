@@ -1,9 +1,9 @@
 import type { Request, Response } from 'express';
-import { User, IUser } from '../models/user.model.ts';
+import { User, type IUser } from '../models/user.model';
 import jwt from 'jsonwebtoken';
-import { ApiError } from '../utils/apiError.ts';
-import { ApiResponse } from '../utils/apiResponse.ts';
-import { uploadToCloudinary } from '../utils/cloudinarySetup.ts';
+import { ApiError } from '../utils/apiError';
+import { ApiResponse } from '../utils/apiResponse';
+import { uploadToCloudinary } from '../utils/cloudinarySetup';
 
 interface MulterFiles {
     avatar?: Express.Multer.File[];
@@ -42,12 +42,12 @@ const getAccessAndRefreshToken = async (userId: string) => {
 };
 
 /**
- * @route POST /register
+ * @route POST /auth/register
  * @desc Register a new user
  * @access Public
  */
 export const registerUser = async (
-    req: Request<{}, {}, RegisterRequestBody>,
+    req: Request<{}, {}, RegisterRequestBody, {}, { user: IUser }>,
     res: Response<ApiResponse<{ user: IUser | null; accessToken: string; refreshToken: string } | null>>
 ) => {
     try {
@@ -102,7 +102,7 @@ export const registerUser = async (
             fullName,
             password,
             avatar: avatar.secure_url,
-            coverImage: coverImage?.secure_url || '',
+            coverImage: coverImage?.secure_url || undefined,
             subscribersCount: 0,
             isEmailVerified: false,
             isDeleted: false,
@@ -115,10 +115,15 @@ export const registerUser = async (
         const { accessToken, refreshToken } = await getAccessAndRefreshToken(user._id.toString());
         
         // Step 7: Send response
+        const cookieOptions = {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict' as const,
+        };
         return res
             .status(201)
-            .cookie('accessToken', accessToken, { httpOnly: true, secure: true })
-            .cookie('refreshToken', refreshToken, { httpOnly: true, secure: true })
+            .cookie('accessToken', accessToken, cookieOptions)
+            .cookie('refreshToken', refreshToken, cookieOptions)
             .json(
                 ApiResponse.success(
                     {
@@ -144,12 +149,12 @@ export const registerUser = async (
 };
 
 /**
- * @route POST /login
+ * @route POST /auth/login
  * @desc Login user
  * @access Public
  */
 export const loginUser = async (
-    req: Request<{}, {}, LoginRequestBody>,
+    req: Request<{}, {}, LoginRequestBody, {}, { user: IUser }>,
     res: Response<ApiResponse<{ user: IUser | null; accessToken: string; refreshToken: string } | null>>
 ) => {
     try {
@@ -190,10 +195,15 @@ export const loginUser = async (
         const loggedInUser = await User.findById(user._id).select('-password -refreshToken');
 
         // Step 6: Send response
+        const cookieOptions = {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict' as const,
+        };
         return res
             .status(200)
-            .cookie('accessToken', accessToken, { httpOnly: true, secure: true })
-            .cookie('refreshToken', refreshToken, { httpOnly: true, secure: true })
+            .cookie('accessToken', accessToken, cookieOptions)
+            .cookie('refreshToken', refreshToken, cookieOptions)
             .json(
                 ApiResponse.success(
                     { user: loggedInUser, accessToken, refreshToken },
@@ -214,7 +224,7 @@ export const loginUser = async (
 };
 
 /**
- * @route POST /logout
+ * @route POST /auth/logout
  * @desc Logout user
  * @access Private
  */
@@ -232,8 +242,13 @@ export const logoutUser = async (
 
         await User.findByIdAndUpdate(user._id, { $set: { refreshToken: '' } });
 
-        res.clearCookie('accessToken', { httpOnly: true, secure: true });
-        res.clearCookie('refreshToken', { httpOnly: true, secure: true });
+        const cookieOptions = {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict' as const,
+        };
+        res.clearCookie('accessToken', cookieOptions);
+        res.clearCookie('refreshToken', cookieOptions);
 
         res.status(200).json(
             ApiResponse.success({}, 'User logged out successfully', 200)
@@ -251,7 +266,7 @@ export const logoutUser = async (
 };
 
 /**
- * @route POST /refresh-token
+ * @route POST /auth/refresh-token
  * @desc Refresh access token
  * @access Private
  */
@@ -281,13 +296,22 @@ export const refreshToken = async (
 
         const { accessToken, refreshToken: newRefreshToken } = await getAccessAndRefreshToken(user._id.toString());
 
-        return res.status(200).json(
-            ApiResponse.success(
-                { accessToken, refreshToken: newRefreshToken },
-                'Tokens refreshed successfully',
-                200
-            )
-        );
+        const cookieOptions = {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict' as const,
+        };
+        return res
+            .status(200)
+            .cookie('accessToken', accessToken, cookieOptions)
+            .cookie('refreshToken', refreshToken, cookieOptions)
+            .json(
+                ApiResponse.success(
+                    { accessToken, refreshToken: newRefreshToken },
+                    'Tokens refreshed successfully',
+                    200
+                )
+            );
     } catch (error) {
         return res.status(401).json(
             ApiResponse.error(

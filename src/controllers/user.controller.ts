@@ -1,8 +1,9 @@
 import type { Request, Response } from 'express';
-import { User, IUser } from '../models/user.model.ts';
-import { IVideo, Video } from '../models/video.model.ts';
-import { uploadToCloudinary } from '../utils/cloudinarySetup.ts';
-import { ApiResponse } from '../utils/apiResponse.ts';
+import mongoose from 'mongoose';
+import { User, type IUser } from '../models/user.model';
+import { type IVideo, Video } from '../models/video.model';
+import { uploadToCloudinary } from '../utils/cloudinarySetup';
+import { ApiResponse, type ApiResponseMeta } from '../utils/apiResponse';
 
 interface UpdateProfileBody {
     fullName?: string;
@@ -14,8 +15,15 @@ interface ChangePasswordBody {
     newPassword: string;
 }
 
-interface SearchQuery {
-    query: string;
+interface SearchQueryParams {
+    query?: string;
+    page?: string;
+    limit?: string;
+}
+
+interface PaginationParams {
+    page?: string;
+    limit?: string;
 }
 
 /**
@@ -104,6 +112,12 @@ export const updateProfile = async (
             { fullName, bio },
             { new: true, runValidators: true }
         ).select('-password -refreshToken');
+
+        if (!updatedUser) {
+            return res.status(404).json(
+                ApiResponse.error(404, null, 'User not found')
+            );
+        }
 
         return res.status(200).json(
             ApiResponse.success(updatedUser, 'Profile updated successfully', 200)
@@ -202,11 +216,17 @@ export const updateAvatar = async (
             );
         }
 
-        await User.findByIdAndUpdate(
+        const updatedUser = await User.findByIdAndUpdate(
             user._id,
             { avatar: avatar.secure_url },
             { new: true }
         );
+
+        if (!updatedUser) {
+            return res.status(404).json(
+                ApiResponse.error(404, null, 'User not found')
+            );
+        }
 
         return res.status(200).json(
             ApiResponse.success(
@@ -258,10 +278,16 @@ export const updateCoverImage = async (
             );
         }
 
-        await User.findByIdAndUpdate(
+        const updatedUser = await User.findByIdAndUpdate(
             user._id,
             { coverImage: coverImage.secure_url }
         );
+
+        if (!updatedUser) {
+            return res.status(404).json(
+                ApiResponse.error(404, null, 'User not found')
+            );
+        }
 
         return res.status(200).json(
             ApiResponse.success(
@@ -283,12 +309,12 @@ export const updateCoverImage = async (
 };
 
 /**
- * @route GET /users/videos
+ * @route GET /users/my-videos
  * @desc Get videos uploaded by the authenticated user
  * @access Private
  */
 export const getMyVideos = async (
-    req: Request,
+    req: Request<{}, {}, PaginationParams>,
     res: Response<ApiResponse<{ videos: IVideo[]; totalVideos: number } | null>>
 ) => {
     try {
@@ -300,8 +326,14 @@ export const getMyVideos = async (
         const { page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
+        const match: any = {
+            owner: user._id,
+            isPublished: true,
+            isDeleted: { $ne: true }
+        };
+
         const videos = await Video.aggregate([
-            { $match: { owner: user._id, isPublished: true } },
+            { $match: match },
             {
                 $lookup: {
                     from: 'users',
@@ -328,16 +360,23 @@ export const getMyVideos = async (
             { $limit: Number(limit) }
         ]);
 
-        const totalVideos = await Video.countDocuments({
-            owner: user._id,
-            isPublished: true
-        });
+        const totalVideos = await Video.countDocuments(match);
+
+        const meta: ApiResponseMeta = {
+            pagination: {
+                current: Number(page),
+                pageSize: Number(limit),
+                total: totalVideos,
+                totalPages: Math.ceil(totalVideos / Number(limit))
+            }
+        };
 
         return res.status(200).json(
             ApiResponse.success(
                 { videos, totalVideos },
                 'Videos fetched successfully',
-                200
+                200,
+                meta
             )
         );
     } catch (error) {
@@ -358,7 +397,7 @@ export const getMyVideos = async (
  * @access Public
  */
 export const getUserVideos = async (
-    req: Request<{ id: string }>,
+    req: Request<{ id: string }, {}, {}, PaginationParams>,
     res: Response<ApiResponse<{ videos: IVideo[]; totalVideos: number } | null>>
 ) => {
     try {
@@ -366,15 +405,23 @@ export const getUserVideos = async (
         const { page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
+        const ownerId = new mongoose.Types.ObjectId(id);
+
+        const match: any = {
+            owner: ownerId,
+            isPublished: true,
+            isDeleted: { $ne: true }
+        };
+
         const videos = await Video.aggregate([
-            { $match: { owner: new User({ id }), isPublished: true } },
+            { $match: match },
             {
                 $lookup: {
                     from: 'users',
                     localField: 'owner',
                     foreignField: '_id',
                     as: 'owner',
-                    pipeline: [{ $project: { fullName: 1, username: 1 } }]
+                    pipeline: [{ $project: { fullName: 1, username: 1, avatar: 1 } }]
                 }
             },
             { $unwind: '$owner' },
@@ -386,6 +433,7 @@ export const getUserVideos = async (
                     views: 1,
                     likesCount: 1,
                     createdAt: 1,
+                    owner: '$owner'
                 }
             },
             { $sort: { createdAt: -1 } },
@@ -393,16 +441,23 @@ export const getUserVideos = async (
             { $limit: Number(limit) }
         ]);
 
-        const totalVideos = await Video.countDocuments({
-            owner: id,
-            isPublished: true
-        });
+        const totalVideos = await Video.countDocuments(match);
+
+        const meta: ApiResponseMeta = {
+            pagination: {
+                current: Number(page),
+                pageSize: Number(limit),
+                total: totalVideos,
+                totalPages: Math.ceil(totalVideos / Number(limit))
+            }
+        };
 
         return res.status(200).json(
             ApiResponse.success(
                 { videos, totalVideos },
                 'User videos fetched successfully',
-                200
+                200,
+                meta
             )
         );
     } catch (error) {
@@ -423,28 +478,31 @@ export const getUserVideos = async (
  * @access Public
  */
 export const searchUsers = async (
-    req: Request<{}, {}, SearchQuery>,
+    req: Request<{}, {}, {}, SearchQueryParams>,
     res: Response<ApiResponse<{ users: IUser[]; totalUsers: number } | null>>
 ) => {
     try {
         const { query, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         
-        if (!query) {
+        if (!query || query.length < 2) {
             return res.status(400).json(
                 ApiResponse.error(400, null, 'Search query must be at least 2 characters')
             );
         }
 
+        const searchMatch: any = {
+            $or: [
+                { username: { $regex: query, $options: 'i' } },
+                { fullName: { $regex: query, $options: 'i' } },
+                { email: { $regex: query, $options: 'i' } },
+            ],
+            isDeleted: { $ne: true }
+        };
+
         const users = await User.aggregate([
             { 
-                $match: {
-                    $or: [
-                        { username: { $regex: query, $options: 'i' } },
-                        { fullName: { $regex: query, $options: 'i' } },
-                        { email: { $regex: query, $options: 'i' } },
-                    ]
-                } 
+                $match: searchMatch
             },
             { 
                 $project: {
@@ -459,18 +517,23 @@ export const searchUsers = async (
             { $limit: Number(limit) }
         ]);
 
-        const totalUsers = await User.countDocuments({
-            $or: [
-                { username: { $regex: query, $options: 'i' } },
-                { fullName: { $regex: query, $options: 'i' } },
-            ]
-        });
+        const totalUsers = await User.countDocuments(searchMatch);
+
+        const meta: ApiResponseMeta = {
+            pagination: {
+                current: Number(page),
+                pageSize: Number(limit),
+                total: totalUsers,
+                totalPages: Math.ceil(totalUsers / Number(limit))
+            }
+        };
 
         return res.status(200).json(
             ApiResponse.success(
                 { users, totalUsers },
                 'Users found successfully',
-                200
+                200,
+                meta
             )
         );
     } catch (error) {
@@ -483,4 +546,4 @@ export const searchUsers = async (
             )
         );
     }
-}
+};
