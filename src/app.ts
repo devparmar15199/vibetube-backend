@@ -32,7 +32,7 @@ app.use('/api/v1/subscriptions', subscriptionRoutes);
 app.use('/api/v1/videos', videoRoutes);
 
 // 404 handler
-app.use('*', (req: Request, res: Response) => {
+app.use((req: Request, res: Response) => {
     res.status(404).json(ApiResponse.error(404, null, 'Route not found'));
 });
 

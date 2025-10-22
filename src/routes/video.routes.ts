@@ -10,7 +10,7 @@ import {
     toggleLike,
     getLikesCount
 } from "../controllers/video.controller";
-import { videoUpload } from "../middlewares/multer.middleware";
+import { uploadVideoAndThumbnail } from "../middlewares/multer.middleware";
 import { verifyToken } from "../middlewares/auth.middleware";
 
 const router = Router();
@@ -23,7 +23,7 @@ router.get('/:videoId', getVideoById);
 
 // Private routes
 router.use(verifyToken);
-router.post('/', videoUpload, uploadVideo);
+router.post('/', uploadVideoAndThumbnail, uploadVideo);
 router.patch('/:videoId', updateVideo);
 router.delete('/:videoId', deleteVideo);
 router.post('/:videoId/publish', togglePublishStatus);

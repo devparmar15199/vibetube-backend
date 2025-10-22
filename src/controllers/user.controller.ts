@@ -32,8 +32,8 @@ interface PaginationParams {
  * @access Private
  */
 export const getMyProfile = async (
-    req: Request,
-    res: Response<ApiResponse<IUser | null>>
+    req: Request<{}, {}, {}, {}, { user: IUser }>,
+    res: Response<ApiResponse<{ user: IUser | null } | null>>
 ) => {
     try {
         const user = req.user;
@@ -42,7 +42,7 @@ export const getMyProfile = async (
         }
 
         return res.status(200).json(
-            ApiResponse.success(user, 'Profile fetched successfully', 200)
+            ApiResponse.success({ user }, 'Profile fetched successfully', 200)
         );
     } catch (error) {
         return res.status(500).json(
@@ -62,8 +62,8 @@ export const getMyProfile = async (
  * @access Public
  */
 export const getUserById = async (
-    req: Request<{ id: string }>,
-    res: Response<ApiResponse<IUser | null>>
+    req: Request<{ id: string }, {}, {}, {}, { user: IUser }>,
+    res: Response<ApiResponse<{ user: IUser | null } | null>>
 ) => {
     try {
         const { id } = req.params;
@@ -76,7 +76,7 @@ export const getUserById = async (
         }
         
         return res.status(200).json(
-            ApiResponse.success(user, 'User fetched successfully', 200)
+            ApiResponse.success({ user }, 'User fetched successfully', 200)
         );
     } catch (error) {
         return res.status(500).json(
@@ -96,8 +96,8 @@ export const getUserById = async (
  * @access Private
  */
 export const updateProfile = async (
-    req: Request<{}, {}, UpdateProfileBody>,
-    res: Response<ApiResponse<IUser | null>>
+    req: Request<{}, {}, UpdateProfileBody, {}, { user: IUser }>,
+    res: Response<ApiResponse<{ user: IUser | null } | null>>
 ) => {
     try {
         const user = req.user;
@@ -120,7 +120,7 @@ export const updateProfile = async (
         }
 
         return res.status(200).json(
-            ApiResponse.success(updatedUser, 'Profile updated successfully', 200)
+            ApiResponse.success({ user: updatedUser }, 'Profile updated successfully', 200)
         );
     } catch (error) {
         return res.status(500).json(
@@ -140,8 +140,8 @@ export const updateProfile = async (
  * @access Private
  */
 export const changePassword = async (
-    req: Request<{}, {}, ChangePasswordBody>,
-    res: Response<ApiResponse<null>>
+    req: Request<{}, {}, ChangePasswordBody, {}, { user: IUser }>,
+    res: Response<ApiResponse<{} | null>>
 ) => {
     try {
         const { currentPassword, newPassword } = req.body;
@@ -171,7 +171,7 @@ export const changePassword = async (
         await user.save({ validateBeforeSave: false });
 
         return res.status(200).json(
-            ApiResponse.success(null, 'Password changed successfully', 200)
+            ApiResponse.success({}, 'Password changed successfully', 200)
         );
     } catch (error) {
         return res.status(500).json(
@@ -191,7 +191,7 @@ export const changePassword = async (
  * @access Private
  */
 export const updateAvatar = async (
-    req: Request,
+    req: Request<{}, {}, {}, {}, { user: IUser }>,
     res: Response<ApiResponse<{ avatar: string } | null>>
 ) => {
     try {
@@ -253,7 +253,7 @@ export const updateAvatar = async (
  * @access Private
  */
 export const updateCoverImage = async (
-    req: Request,
+    req: Request<{}, {}, {}, {}, { user: IUser }>,
     res: Response<ApiResponse<{ coverImage: string } | null>>
 ) => {
     try {
@@ -314,7 +314,7 @@ export const updateCoverImage = async (
  * @access Private
  */
 export const getMyVideos = async (
-    req: Request<{}, {}, PaginationParams>,
+    req: Request<{}, {}, {}, PaginationParams, { user: IUser }>,
     res: Response<ApiResponse<{ videos: IVideo[]; totalVideos: number } | null>>
 ) => {
     try {

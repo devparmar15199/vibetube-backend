@@ -20,7 +20,7 @@ interface PaginationParams {
  * @access Private
  */
 export const subscribe = async (
-    req: Request<{}, {}, SubscribeBody>,
+    req: Request<{}, {}, SubscribeBody, {}, { user: IUser }>,
     res: Response<ApiResponse<{ channel: IUser | null } | null>>
 ) => {
     try {
@@ -80,7 +80,7 @@ export const subscribe = async (
  * @access Private
  */
 export const unsubscribe = async (
-    req: Request<{ channelId: string }>,
+    req: Request<{ channelId: string }, {}, {}, {}, { user: IUser }>,
     res: Response<ApiResponse<{} | null>>
 ) => {
     try {
@@ -131,7 +131,7 @@ export const unsubscribe = async (
  * @access Private
  */
 export const getMySubscriptions = async (
-    req: Request<{}, {}, {}, PaginationParams>,
+    req: Request<{}, {}, {}, PaginationParams, { user: IUser }>,
     res: Response<ApiResponse<{ subscriptions: ISubscription[]; totalSubscriptions: number } | null>>
 ) => {
     try {
@@ -199,90 +199,12 @@ export const getMySubscriptions = async (
 };
 
 /**
- * @route GET /subscriptions/users/:userId/subscribers
- * @desc Get channel's subscribers
- * @access Private
- */
-export const getChannelSubscribers = async (
-    req: Request<{ userId: string }, {}, {}, PaginationParams>,
-    res: Response<ApiResponse<{ subscribers: ISubscription[]; totalSubscribers: number } | null>>
-) => {
-    try {
-        const { userId } = req.params;
-        const { page = 1, limit = 10 } = req.query;
-        const skip = (Number(page) - 1) * Number(limit);
-
-        const channelObjectId = new mongoose.Types.ObjectId(userId);
-
-        const match: any = {
-            channel: channelObjectId,
-            isDeleted: { $ne: true }
-        };
-
-        const subscribers = await Subscription.aggregate([
-            { $match: match },
-            {
-                $lookup: {
-                    from: 'users',
-                    localField: 'subscriber',
-                    foreignField: '_id',
-                    as: 'subscriberData',
-                    pipeline: [
-                        { $match: { isDeleted: { $ne: true } } },
-                        { $project: { username: 1, fullName: 1, avatar: 1 } }
-                    ]
-                }
-            },
-            { $unwind: '$subscriberData' },
-            {
-                $project: {
-                    subscriber: '$subscriberData',
-                    subscribedAt: '$createdAt'
-                }
-            },
-            { $sort: { 'subscriber.fullName': 1 } },
-            { $skip: skip },
-            { $limit: Number(limit) }
-        ]);
-
-        const totalSubscribers = await Subscription.countDocuments(match);
-
-        const meta: ApiResponseMeta = {
-            pagination: {
-                current: Number(page),
-                pageSize: Number(limit),
-                total: totalSubscribers,
-                totalPages: Math.ceil(totalSubscribers / Number(limit))
-            }
-        };
-
-        return res.status(200).json(
-            ApiResponse.success(
-                { subscribers, totalSubscribers },
-                `${totalSubscribers} subscribers found`,
-                200,
-                meta
-            )
-        );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching subscribers',
-                error instanceof Error ? [error.message] : []
-            )
-        );
-    }
-};
-
-/**
  * @route POST /subscriptions/toggle/:channelId
  * @desc Toggle subscription to a channel
  * @access Private
  */
 export const toggleSubscription = async (
-    req: Request<{ channelId: string }>,
+    req: Request<{ channelId: string }, {}, {}, {}, { user: IUser }>,
     res: Response<ApiResponse<{ isSubscribed: boolean; channel: IUser | null } | null>>
 ) => {
     try {
@@ -345,46 +267,12 @@ export const toggleSubscription = async (
 };
 
 /**
- * @route GET /subscriptions/users/:userId/subscribers/count
- * @desc Get subscription count for a channel
- * @access Public
- */
-export const getSubscriberCount = async (
-    req: Request<{ userId: string }>,
-    res: Response<ApiResponse<{ count: number } | null>>
-) => {
-    try {
-        const { userId } = req.params;
-        const channelObjectId = new mongoose.Types.ObjectId(userId);
-        const user = await User.findById(channelObjectId).select('subscribersCount');
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Channel not found'));
-
-        return res.status(200).json(
-            ApiResponse.success(
-                { count: user.subscribersCount },
-                'Subscriber count fetched successfully',
-                200
-            )
-        );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching subscriber count',
-                error instanceof Error ? [error.message] : []
-            )
-        );
-    }
-};
-
-/**
  * @route GET /subscriptions/is-subscribed/:channelId
  * @desc Check if user is subscribed to a channel
  * @access Private
  */
 export const isSubscribed = async (
-    req: Request<{ channelId: string }>,
+    req: Request<{ channelId: string }, {}, {}, {}, { user: IUser }>,
     res: Response<ApiResponse<{ isSubscribed: boolean } | null>>
 ) => {
     try {
@@ -425,7 +313,7 @@ export const isSubscribed = async (
  * @access Private
  */
 export const getSubscriptionFeed = async (
-    req: Request<{}, {}, {}, PaginationParams>,
+    req: Request<{}, {}, {}, PaginationParams, { user: IUser }>,
     res: Response<ApiResponse<{ videos: IVideo[]; totalVideos: number } | null>>
 ) => {
     try {
@@ -521,5 +409,117 @@ export const getSubscriptionFeed = async (
                 error instanceof Error ? [error.message] : []
             )
         );   
+    }
+};
+
+/**
+ * @route GET /subscriptions/users/:userId/subscribers
+ * @desc Get channel's subscribers
+ * @access Public
+ */
+export const getChannelSubscribers = async (
+    req: Request<{ userId: string }, {}, {}, PaginationParams>,
+    res: Response<ApiResponse<{ subscribers: ISubscription[]; totalSubscribers: number } | null>>
+) => {
+    try {
+        const { userId } = req.params;
+        const { page = 1, limit = 10 } = req.query;
+        const skip = (Number(page) - 1) * Number(limit);
+
+        const channelObjectId = new mongoose.Types.ObjectId(userId);
+
+        const match: any = {
+            channel: channelObjectId,
+            isDeleted: { $ne: true }
+        };
+
+        const subscribers = await Subscription.aggregate([
+            { $match: match },
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'subscriber',
+                    foreignField: '_id',
+                    as: 'subscriberData',
+                    pipeline: [
+                        { $match: { isDeleted: { $ne: true } } },
+                        { $project: { username: 1, fullName: 1, avatar: 1 } }
+                    ]
+                }
+            },
+            { $unwind: '$subscriberData' },
+            {
+                $project: {
+                    subscriber: '$subscriberData',
+                    subscribedAt: '$createdAt'
+                }
+            },
+            { $sort: { 'subscriber.fullName': 1 } },
+            { $skip: skip },
+            { $limit: Number(limit) }
+        ]);
+
+        const totalSubscribers = await Subscription.countDocuments(match);
+
+        const meta: ApiResponseMeta = {
+            pagination: {
+                current: Number(page),
+                pageSize: Number(limit),
+                total: totalSubscribers,
+                totalPages: Math.ceil(totalSubscribers / Number(limit))
+            }
+        };
+
+        return res.status(200).json(
+            ApiResponse.success(
+                { subscribers, totalSubscribers },
+                `${totalSubscribers} subscribers found`,
+                200,
+                meta
+            )
+        );
+    } catch (error) {
+        return res.status(500).json(
+            ApiResponse.error(
+                500,
+                null,
+                'Internal Server Error while fetching subscribers',
+                error instanceof Error ? [error.message] : []
+            )
+        );
+    }
+};
+
+/**
+ * @route GET /subscriptions/users/:userId/subscribers/count
+ * @desc Get subscription count for a channel
+ * @access Public
+ */
+export const getSubscriberCount = async (
+    req: Request<{ userId: string }>,
+    res: Response<ApiResponse<{ count: number } | null>>
+) => {
+    try {
+        const { userId } = req.params;
+        const channelObjectId = new mongoose.Types.ObjectId(userId);
+        const user = await User.findById(channelObjectId).select('subscribersCount');
+        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Channel not found'));
+
+        return res.status(200).json(
+            ApiResponse.success(
+                { count: user.subscribersCount },
+                'Subscriber count fetched successfully',
+                200
+            )
+        );
+    } catch (error) {
+        return res.status(500).json(
+            ApiResponse.error(
+                500,
+                null,
+                'Internal Server Error while fetching subscriber count',
+                error instanceof Error ? [error.message] : []
+            )
+        );
     }
 };

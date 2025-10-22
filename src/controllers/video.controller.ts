@@ -1,14 +1,21 @@
 import type { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { Video, type IVideo } from '../models/video.model';
-import { User, type IUser } from '../models/user.model';
-import { Like, type ILike } from '../models/like.model';
-import { View, type IView } from '../models/view.model';
+import { type IUser } from '../models/user.model';
+import { Like } from '../models/like.model';
+import { View } from '../models/view.model';
 import { ApiResponse, type ApiResponseMeta } from '../utils/apiResponse';
 import { uploadToCloudinary } from '../utils/cloudinarySetup';
 
 interface UploadVideoBody {
     title: string;
+    description?: string;
+    category?: string;
+    subscribersOnly?: boolean;
+}
+
+interface UpdateVideoBody {
+    title?: string;
     description?: string;
     category?: string;
     subscribersOnly?: boolean;
@@ -131,7 +138,7 @@ export const uploadVideo = async (
  * @access Public
  */
 export const getVideoById = async (
-    req: Request<{ videoId: string }>,
+    req: Request<{ videoId: string }, {}, {}, {}, { user?: IUser }>,
     res: Response<ApiResponse<{ video: IVideo | null; owner: IUser | null } | null>>
 ) => {
     try {
@@ -265,7 +272,7 @@ export const getAllVideos = async (
  * @access Private
  */
 export const updateVideo = async (
-    req: Request<{ videoId: string }, {}, UploadVideoBody, {}, { user: IUser }>,
+    req: Request<{ videoId: string }, {}, UpdateVideoBody, {}, { user: IUser }>,
     res: Response<ApiResponse<{ video: IVideo | null } | null>>
 ) => {
     try {
@@ -288,7 +295,7 @@ export const updateVideo = async (
         }
 
         const updatedData: any = {
-            title: title.trim() || video.title,
+            title: title?.trim() || video.title,
             description: description?.trim() || video.description,
             category: category || video.category,
             subscribersOnly: subscribersOnly || video.subscribersOnly,
@@ -512,7 +519,7 @@ export const getUserVideos = async (
 };
 
 /**
- * @route GET /videos/:videoId/like
+ * @route POST /videos/:videoId/like
  * @desc Like or unlike a video
  * @access Private
  */
