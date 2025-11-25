@@ -1,5 +1,6 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import mongooseAggregatePaginate from 'mongoose-aggregate-paginate-v2';
+import { config } from '../config';
 
 /**
  * Interface for Playlist document.
@@ -11,8 +12,6 @@ export interface IPlaylist extends Document {
     owner: mongoose.Types.ObjectId;
     thumbnail?: string;     // Optional; can auto-generate from first video
     isPublic: boolean;
-    isDeleted: boolean;
-    deletedAt?: Date;
 
     /**
      * Virtual for video count
@@ -20,14 +19,16 @@ export interface IPlaylist extends Document {
     videoCount?: number;
 }
 
-// Schema definition
+/**
+ * Mongoose schema for Playlist model.
+ */
 const playlistSchema = new Schema<IPlaylist>({
     name: {
         type: String,
         required: [true, 'Playlist name is required'],
         maxLength: [100, 'Playlist name cannot exceed 100 characters'],
         trim: true,
-        index: 'text',  // For search
+        index: 'text',
     },
     description: { 
         type: String,
@@ -38,7 +39,6 @@ const playlistSchema = new Schema<IPlaylist>({
         {
             type: Schema.Types.ObjectId,
             ref: 'Video',
-            // Limit for scalability
             validate: {
                 validator: function (v: mongoose.Types.ObjectId[]) {
                     return v.length <= 500;
@@ -54,50 +54,44 @@ const playlistSchema = new Schema<IPlaylist>({
         index: true,
     },
     thumbnail: { 
-        type: String,   // Cloudinary URL
+        type: String,
         trim: true, 
     },
     isPublic: { 
         type: Boolean, 
         default: true 
     },
-    isDeleted: { 
-        type: Boolean, 
-        default: false 
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
     timestamps: true,
-    autoIndex: process.env.NODE_ENV === 'development', 
+    autoIndex: config.nodeEnv === 'development', 
 });
 
 // Indexes
 playlistSchema.index({ owner: 1, isPublic: 1, createdAt: -1 }); // User's playlists
 playlistSchema.index({ isPublic: 1, createdAt: -1 }); // Public discovery
-playlistSchema.index({ name: 'text' }); // Search
-playlistSchema.index({ isDeleted: 1 });
 
-// Virtual for video count (efficient without population)
+// Virtual for video count
 playlistSchema.virtual('videoCount').get(function () {
     return this.videos.length;
 });
 
-// Pagination for listing playlists
-playlistSchema.plugin(mongooseAggregatePaginate);
-
-// Soft delete
-playlistSchema.pre(['find', 'findOne', 'findOneAndUpdate'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
+// Pre-save: Auto-set thumbnail
+playlistSchema.pre('save', async function (next) {
+    if (!this.thumbnail && this.videos.length > 0) {
+        const firstVideo = await mongoose.model('Video').findById(this.videos[0]).select('thumbnail');
+        if (firstVideo) this.thumbnail = firstVideo.thumbnail;
+    }
     next();
 });
+
+// Pagination
+playlistSchema.plugin(mongooseAggregatePaginate);
 
 // toJSON
 playlistSchema.methods.toJSON = function () {
     const obj = this.toObject();
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 

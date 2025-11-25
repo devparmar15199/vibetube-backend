@@ -1,6 +1,7 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { config } from '../config';
 
 /**
  * Interface for User document, extending Mongoose Document for full type safety.
@@ -16,11 +17,9 @@ export interface IUser extends Document {
     bio?: string;
     password: string;  // Hashed; never expose in responses
     refreshToken: string;  // For session refresh; stored securely
-    watchHistory: mongoose.Types.ObjectId[];  // References to Video IDs; limited for performance
-    subscribersCount: number;  // Denormalized count of subscribers (updated via hooks)
+    watchHistory: mongoose.Types.ObjectId[];  // References to recent Video IDs; limited for performance (full history in WatchHistory model)
+    subscribersCount: number;  // Denormalized count of subscribers (updated via hooks in Subscription model)
     isEmailVerified: boolean;
-    isDeleted: boolean;
-    deletedAt?: Date;  // Timestamp for soft delete audit
 
     /**
      * Compares a plain password against the hashed one.
@@ -47,7 +46,10 @@ export interface IUser extends Document {
     subscribers?: IUser[];
 }
 
-// Schema definition with validation and defaults
+/**
+ * Mongoose schema for User model.
+ * Defines structure, validations, indexes, and hooks.
+ */
 const userSchema = new Schema<IUser>({
     username: {
         type: String,
@@ -55,9 +57,8 @@ const userSchema = new Schema<IUser>({
         unique: true,
         lowercase: true,
         trim: true,
-        // Custom validator for alphanumeric + underscores/dashes
         match: [/^[a-zA-Z0-9_-]+$/, 'Username can only contain letters, numbers, underscores, and dashes'],
-        index: true,  // Single field index for lookups
+        index: true,
         minlength: [3, 'Username must be at least 3 characters'],
     },
     email: {
@@ -67,7 +68,7 @@ const userSchema = new Schema<IUser>({
         lowercase: true,
         trim: true,
         match: [/^\S+@\S+\.\S+$/, 'Please use a valid email address'],
-        index: true,  // Single field index for auth queries
+        index: true,
     },
     fullName: {
         type: String,
@@ -76,37 +77,37 @@ const userSchema = new Schema<IUser>({
         maxLength: [50, 'Full name cannot exceed 50 characters'],
     },
     avatar: {
-        type: String,   // Cloudinary URL
+        type: String,
         required: [true, 'Avatar is required'],
         trim: true,
     },
     coverImage: { 
-        type: String,   // Optional Cloudinary URL for channel banner
+        type: String,
         trim: true, 
     },
     bio: { 
         type: String,
         maxLength: [200, 'Bio cannot exceed 200 characters'],
         trim: true,
+        default: 'Default bio given to everyone...',
     },
     password: { 
         type: String,
         required: [true, 'Password is required'], 
         minlength: [8, 'Password must be at least 8 characters'],
-        select: false,  // Exclude from queries by default for security
+        select: false,
     },
     refreshToken: { 
         type: String,
-        select: false,  // Exclude for security
+        select: false,
     },
     watchHistory: [
         {
             type: Schema.Types.ObjectId,
             ref: 'Video',
-            // Limit array size for scalability
             validate: {
                 validator: function (v: mongoose.Types.ObjectId[]) {
-                    return v.length <= 100;  // Max 100 entries
+                    return v.length <= 100;  // Max 100 recent entries
                 },
                 message: 'Watch history cannot exceed 100 entries',
             },
@@ -115,61 +116,60 @@ const userSchema = new Schema<IUser>({
     subscribersCount: {
         type: Number,
         default: 0,
-        min: 0, // Ensure non-negative
+        min: 0,
     },
     isEmailVerified: {
         type: Boolean,
         default: false,
     },
-    isDeleted: {
-        type: Boolean,
-        default: false,
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
-    timestamps: true,   // Auto-add createdAt/updatedAt
-    autoIndex: process.env.NODE_ENV === 'development', // Defer indexing in prod for faster startup
+    timestamps: true,
+    autoIndex: config.nodeEnv === 'development',
 });
 
-// Compound indexes for common queries
-// Soft delete + verification for active user fetches
-userSchema.index({ isDeleted: 1, isEmailVerified: 1 });
+// Compound indexes
+userSchema.index({ subscribersCount: -1 }); // Descending sort for popular channels
+userSchema.index({ username: 'text', fullName: 'text', bio: 'text' });  // Text index for search
 
-// Descending sort for popular channels
-userSchema.index({ subscribersCount: -1 });
-
-// Text index for search (username + fullName + bio)
-userSchema.index({ username: 'text', fullName: 'text', bio: 'text' });
-
-// Virtual for subscribers (populate from Subscription model)
+// Virtual for subscribers
 userSchema.virtual('subscribers', {
     ref: 'Subscription',
     localField: '_id',
     foreignField: 'channel',
-    justOne: false, // Array
-    options: { sort: { createdAt: -1 } }, // Recent first
+    justOne: false,
+    options: { sort: { createdAt: -1 } },
 });
 
-// Pre-save hook: Hash password if modified (secure one-way)
+// Pre-save hook: Hash password
 userSchema.pre('save', async function (next) {
     if (!this.isModified('password') || !this.password) return next();
     try {
-        this.password = await bcrypt.hash(this.password, 12);   // Increased salt rounds for security
+        this.password = await bcrypt.hash(this.password, 12);
         next();   
     } catch (error) {
         next(error as Error);
     }
 });
 
-// Instance methods for auth
+// Pre-deleteOne: Clean up related data
+userSchema.pre('deleteOne', { document: true, query: false }, async function (next) {
+    try {
+        await mongoose.model('Subscription').deleteMany({ $or: [{ subscriber: this._id }, { channel: this._id }] });
+        await mongoose.model('Notification').deleteMany({ user: this._id });
+        await mongoose.model('Video').deleteMany({ owner: this._id });
+        next();   
+    } catch (error) {
+        next(error as Error);
+    }
+});
+
+// Instance methods
 userSchema.methods.comparePassword = async function (currentPassword: string): Promise<boolean> {
     return await bcrypt.compare(currentPassword, this.password);
 };
 
 userSchema.methods.generateAccessToken = function (): string {
-    if (!process.env.ACCESS_TOKEN_SECRET) {
+    if (!config.accessTokenSecret) {
         throw new Error('ACCESS_TOKEN_SECRET not configured');
     }
     return jwt.sign(
@@ -179,38 +179,26 @@ userSchema.methods.generateAccessToken = function (): string {
             email: this.email,
             fullName: this.fullName,
         },
-        process.env.ACCESS_TOKEN_SECRET!,
-        { expiresIn: '1d' } // Short-lived for security
+        config.accessTokenSecret,
+        { expiresIn: '1d' }
     );
 };
 
 userSchema.methods.generateRefreshToken = function (): string {
-    if (!process.env.REFRESH_TOKEN_SECRET) {
+    if (!config.refreshTokenSecret) {
         throw new Error('REFRESH_TOKEN_SECRET not configured');
     }
-    return jwt.sign(
-        { _id: this._id.toString() },
-        process.env.REFRESH_TOKEN_SECRET!,
-        { expiresIn: '14d' }    // Longer for session persistence
-    );
+    return jwt.sign({ _id: this._id.toString() }, config.refreshTokenSecret, { expiresIn: '14d' });
 };
 
-// Transform toJSON: Exclude sensitive fields in API responses
+// toJSON: Exclude sensitive fields and add id
 userSchema.methods.toJSON = function () {
     const obj = this.toObject();
     delete obj.password;
     delete obj.refreshToken;
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 
-// Soft delete middleware: Filter out deleted docs in queries
-// Applied to multiple hooks for comprehensiveness
-userSchema.pre(['find', 'findOne', 'findOneAndUpdate', 'countDocuments'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
-    next();
-});
-
-// Export model
 export const User = mongoose.model<IUser>('User', userSchema);

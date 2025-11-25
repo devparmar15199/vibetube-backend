@@ -1,5 +1,7 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import mongooseAggregatePaginate from 'mongoose-aggregate-paginate-v2';
+import { NOTIFICATION_TYPES } from '../utils/constants';
+import { config } from '../config';
 
 /**
  * Interface for Notification document.
@@ -7,28 +9,28 @@ import mongooseAggregatePaginate from 'mongoose-aggregate-paginate-v2';
  */
 export interface INotification extends Document {
     user: mongoose.Types.ObjectId;
-    type: 'subscription' | 'like' | 'comment' | 'video_upload' | 'mention';
+    type: typeof NOTIFICATION_TYPES[number];
     fromUser: mongoose.Types.ObjectId;
     video?: mongoose.Types.ObjectId;
     post?: mongoose.Types.ObjectId;
     comment?: mongoose.Types.ObjectId;
     message: string;
     isRead: boolean;
-    isDeleted: boolean;
-    deletedAt?: Date;
 }
 
-// Schema definition
+/**
+ * Mongoose schema for Notification model.
+ */
 const notificationSchema = new Schema<INotification>({
     user: {
         type: Schema.Types.ObjectId,
         ref: 'User',
         required: true,
-        index: true, // Core query field
+        index: true,
     },
     type: {
         type: String,
-        enum: ['subscription', 'like', 'comment', 'video_upload', 'mention'],
+        enum: NOTIFICATION_TYPES,
         required: true,
         index: true,
     },
@@ -59,40 +61,29 @@ const notificationSchema = new Schema<INotification>({
     isRead: { 
         type: Boolean, 
         default: false,
-        index: true,    // For unread queries 
+        index: true,
     },
-    isDeleted: { 
-        type: Boolean, 
-        default: false 
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
     timestamps: true,
-    autoIndex: process.env.NODE_ENV === 'development', 
+    autoIndex: config.nodeEnv === 'development', 
 });
 
 // Indexes
 notificationSchema.index({ user: 1, isRead: 1, createdAt: -1 });  // User's notification (unread first)
 notificationSchema.index({ user: 1, isRead: 1 });    // Unread count
 notificationSchema.index({ fromUser: 1, createdAt: -1 });    // Sender activity
-notificationSchema.index({ isDeleted: 1 });
+
+// TTL index (30 days)
+notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }); // 30 days
 
 // Pagination
 notificationSchema.plugin(mongooseAggregatePaginate);
 
-// Soft delete
-notificationSchema.pre(['find', 'findOne', 'findOneAndUpdate'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
-    next();
-});
-
 // toJSON
 notificationSchema.methods.toJSON = function () {
     const obj = this.toObject();
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 

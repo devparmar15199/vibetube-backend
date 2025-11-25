@@ -7,43 +7,44 @@ export interface ApiResponseMeta {
     };
 }
 
-export class ApiResponse<T = any> {
-    public statusCode: number;
-    public data: T;
-    public message: string;
-    public success: boolean;
-    public meta?: ApiResponseMeta;
+export class ApiResponse<T> {
+    statusCode: number;
+    data: T | null;
+    message: string;
+    success: boolean;
+    errors?: string[];
+    meta?: ApiResponseMeta;
 
-    constructor(statusCode: number, data: T, message: string = 'Success', meta?: ApiResponseMeta) {
+    constructor(
+        statusCode: number, 
+        data: T | null, 
+        message: string = 'Success',
+        errors: string[] = [],
+        meta?: ApiResponseMeta
+    ) {
         this.statusCode = statusCode;
         this.data = data;
         this.message = message;
-        this.success = statusCode < 400;
+        this.errors = errors;
+        this.success = statusCode < 400 && errors.length === 0;
         this.meta = meta;
     }
 
-    static success<T = any>(
+    static success<T>(
         data: T,
         message: string = 'Success',
         statusCode: number = 200,
         meta?: ApiResponseMeta
     ): ApiResponse<T> {
-        const response = new ApiResponse(statusCode, data, message, meta);
-        response.success = true;
-        return response;
+        return new ApiResponse(statusCode, data, message, [], meta);
     }
 
-    static error<T = any>(
+    static error(
         statusCode: number,
-        data: T = null as T,
-        message: string,
-        errors: string[] = []
-    ): ApiResponse<T> {
-        const response = new ApiResponse(statusCode, data, message);
-        response.success = false;
-        if (errors.length > 0) {
-            response.data = { ...data, errors } as T;
-        }
-        return response;
+        message: string = 'Error',
+        errors: string[] = [],
+        meta?: ApiResponseMeta
+    ): ApiResponse<null> {
+        return new ApiResponse(statusCode, null, message, errors, meta);
     }
 }

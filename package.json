@@ -1,9 +1,9 @@
 {
   "name": "vibetube-backend",
   "version": "1.0.0",
-  "description": "backend for a video streaming platform",
+  "description": "Backend for a video streaming platform",
   "license": "ISC",
-  "author": "dev parmar",
+  "author": "Dev Parmar",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
@@ -11,21 +11,29 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "lint": "eslint . --ext .ts",
-    "test": "jest",
-    "prepare": "husky install"
+    "test": "jest --config jest.config.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
+    "bull": "^4.16.5",
+    "bullmq": "^5.61.0",
     "cloudinary": "^2.8.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.19.1",
     "mongoose-aggregate-paginate-v2": "^1.1.4",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "rate-limit-redis": "^4.2.3",
+    "redis": "^5.10.0",
+    "tslib": "^2.8.1",
+    "winston": "^3.18.3",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",

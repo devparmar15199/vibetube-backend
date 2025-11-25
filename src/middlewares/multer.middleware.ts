@@ -1,6 +1,7 @@
 import type { Request } from 'express';
 import multer from 'multer';
 import path from 'path';
+import logger from '../utils/logger';
 
 const getStorage = (req: Request, file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
     let folder: string;
@@ -11,7 +12,7 @@ const getStorage = (req: Request, file: Express.Multer.File, cb: (error: Error |
     } else {
         return cb(new Error('Invalid field name'), '');
     }
-    cb(null, `./public/${folder}`);
+    cb(null, `/public/${folder}`);
 };
 
 const combinedFileFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
@@ -30,6 +31,7 @@ const imageFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFil
         allowedTypes.test(file.mimetype)) {
         cb(null, true);
     } else {
+        logger.warn(`Invalid image file type: ${file.originalname}`);
         cb(new Error('Only images (JPEG, PNG, GIF, WebP) are allowed'));
     }
 };
@@ -40,6 +42,7 @@ const videoFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFil
         allowedTypes.test(file.mimetype)) {
         cb(null, true);
     } else {
+        logger.warn(`Invalid video file type: ${file.originalname}`);
         cb(new Error('Only videos (MP4, MOV, AVI, WMV, FLV, WebM) are allowed'));
     }
 };
@@ -53,7 +56,7 @@ export const uploadVideoAndThumbnail = multer({
         },
     }),
     fileFilter: combinedFileFilter,
-    limits: { fileSize: 100 * 1024 * 1024 }
+    limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 }).fields([
     { name: 'videoFile', maxCount: 1 },
     { name: 'thumbnail', maxCount: 1 }
@@ -61,7 +64,7 @@ export const uploadVideoAndThumbnail = multer({
 
 export const uploadImage = multer({ 
     storage: multer.diskStorage({
-        destination: (req, file, cb) => cb(null, '.public/images'),
+        destination: (req, file, cb) => cb(null, 'public/images'),
         filename: (req, file, cb) => {
             const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9);
             cb(null, file.fieldname + '-' + uniqueName + path.extname(file.originalname));
@@ -73,7 +76,7 @@ export const uploadImage = multer({
 
 export const uploadVideo = multer({ 
     storage: multer.diskStorage({
-        destination: (req, file, cb) => cb(null, '.public/videos'),
+        destination: (req, file, cb) => cb(null, 'public/videos'),
         filename: (req, file, cb) => {
             const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9);
             cb(null, file.fieldname + '-' + uniqueName + path.extname(file.originalname));

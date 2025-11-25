@@ -1,15 +1,13 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import type { IUser } from './user.model';
+import { config } from '../config';
 
 /**
  * Interface for Subscription document (many-to-many user-channel relation).
- * Supports soft delete for unsubscribe without data loss.
  */
 export interface ISubscription extends Document {
     subscriber: mongoose.Types.ObjectId;    // User who subscribes
     channel: mongoose.Types.ObjectId;   // Channel (User) being subscribed to
-    isDeleted: boolean;
-    deletedAt?: Date;
 
     /**
      * Virtuals for bidirectional population.
@@ -18,7 +16,9 @@ export interface ISubscription extends Document {
     channelDetails?: IUser;
 }
 
-// Schema definition
+/**
+ * Mongoose schema for Subscription model.
+ */
 const subscriptionSchema = new Schema<ISubscription>({
     subscriber: {
         type: Schema.Types.ObjectId,
@@ -30,27 +30,19 @@ const subscriptionSchema = new Schema<ISubscription>({
         ref: 'User',
         required: true,
     },
-    isDeleted: { 
-        type: Boolean, 
-        default: false 
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
     timestamps: true,
-    autoIndex: process.env.NODE_ENV === 'development',
+    autoIndex: config.nodeEnv === 'development',
 });
 
 // Unique compound index to prevent duplicate subscriptions
 subscriptionSchema.index({ subscriber: 1, channel: 1 }, { unique: true });
 
-// Additional indexes for queries
+// Additional indexes
 subscriptionSchema.index({ channel: 1 }); // Channel's subscriber list
 subscriptionSchema.index({ subscriber: 1 }); // User's subscriptions
-subscriptionSchema.index({ isDeleted: 1 });
 
-// Virtuals for population
+// Virtuals
 subscriptionSchema.virtual('subscriberDetails', {
     ref: 'User',
     localField: 'subscriber',
@@ -64,25 +56,28 @@ subscriptionSchema.virtual('channelDetails', {
     justOne: true,
 });
 
-// Post-save hook: Update channel's subscribersCount atomically
+// Post-save hook: Increment subscribersCount
 subscriptionSchema.post('save', async function (doc) {
-    if (doc.isDeleted) return; // No update on delete
     await mongoose.model('User').findByIdAndUpdate(doc.channel, {
         $inc: { subscribersCount: 1 },
     });
 });
 
-// Soft delete filter
-subscriptionSchema.pre(['find', 'findOne', 'findOneAndUpdate'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
-    next();
+// Pre-deleteOne: Decrement subscribersCount
+subscriptionSchema.pre('deleteOne', { document: true, query: false }, async function (next) {
+    try {
+        await mongoose.model('User').findByIdAndUpdate(this.channel, { $inc: { subscribersCount: -1 } });
+        next();
+    } catch (error) {
+        next(error as Error);
+    }
 });
 
 // toJSON
 subscriptionSchema.methods.toJSON = function () {
     const obj = this.toObject();
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 

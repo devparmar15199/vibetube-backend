@@ -1,85 +1,116 @@
 import type { Request, Response } from 'express';
 import mongoose from 'mongoose';
-import { Like, type ILike } from '../models/like.model';
+import { Like } from '../models/like.model';
 import { Video } from '../models/video.model';
 import { Post } from '../models/post.model';
 import { Comment } from '../models/comment.model';
 import { ApiResponse, type ApiResponseMeta } from '../utils/apiResponse';
-import { type IUser } from '../models/user.model';
+import { ApiError } from '../utils/apiError';
+// import { addNotificationJob } from '../queue/notificationQueue';
+import { NOTIFICATION_TYPES } from '../utils/constants';
+import logger from '../utils/logger';
 
 interface PaginationParams {
     page?: number;
     limit?: number;
-    type?: 'Video' | 'Post' | 'Comment';
+    type?: 'video' | 'post' | 'comment';
 }
 
 /**
- * @route POST /likes/:type/:id
- * @desc Toggle like on a video/post/comment
- * @access Private
+ * @route POST /api/v1/likes/:type/:id
+ * @description Toggle like status for a video, post, or comment
+ * @access Private (requires authentication)
+ * @param {string} type - Content type ('video', 'post', or 'comment')
+ * @param {string} id - ID of the content
+ * @returns {ApiResponse} Like status (liked or unliked) and updated likes count
  */
 export const toggleLike = async (
-    req: Request<{ type: 'Video' | 'Post' | 'Comment'; id: string }, {}, {}, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ liked: boolean; likesCount: number } | null>>
+    req: Request<{ type: 'video' | 'post' | 'comment'; id: string }>,
+    res: Response
 ) => {
     try {
         const user = req.user;
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Unauthorized'));
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
 
         const { type, id } = req.params;
+
+        // Validate type
+        if (!['video', 'post', 'comment'].includes(type.toLowerCase())) {
+            throw new ApiError(400, 'Invalid like type', []);
+        }
+
+        // Validate ID
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid content ID', []);
+        }
+
         const targetId = new mongoose.Types.ObjectId(id);
 
-        // Validate type and target existence
+        // Validate target existence
         let targetModel: any;
-        switch (type) {
-            case 'Video':
+        let targetField: string = type.toLowerCase();
+        switch (type.toLowerCase()) {
+            case 'video':
                 targetModel = Video;
                 break;
-            case 'Post':
+            case 'post':
                 targetModel = Post;
                 break;
-            case 'Comment':
+            case 'comment':
                 targetModel = Comment;
                 break;
-            default:
-                return res.status(400).json(ApiResponse.error(400, null, 'Invalid like type'));
         }
-        
+
         const target = await targetModel.findById(targetId);
         if (!target) {
-            return res.status(404).json(ApiResponse.error(404, null, `${type} not found`));
+            throw new ApiError(404, `${type} not found`, []);
         }
 
         // Check existing like
         const existingLike = await Like.findOne({
-            type,
-            [type.toLowerCase()]: targetId,
+            type: type.toLowerCase(),
+            [targetField]: targetId,
             likedBy: user._id,
-            isDeleted: { $ne: true }
         });
 
         let liked = false;
-        let likesCount = target.likesCount;
+        let likesCount = target.likesCount || 0;
 
         if (existingLike) {
             // Unlike
-            await Like.findByIdAndUpdate(existingLike._id, {
-                isDeleted: true,
-                deletedAt: new Date()
-            });
-            likesCount--;
+            await Like.deleteOne({ _id: existingLike._id });
+            likesCount = Math.max(0, likesCount - 1);
         } else {
             // Like
             await Like.create({
-                type,
-                [type.toLowerCase()]: targetId,
+                type: type.toLowerCase(),
+                [targetField]: targetId,
                 likedBy: user._id
             });
             liked = true;
             likesCount++;
+
+            // Queue notification for content owner (if not the liker)
+            // if (target.owner.toString() !== user._id.toString()) {
+            //     const message = `${user.username} liked your ${type.toLowerCase()}`;
+            //     await addNotificationJob(
+            //         target.owner.toString(),
+            //         NOTIFICATION_TYPES[1],
+            //         user._id.toString(),
+            //         message,
+            //         type.toLowerCase() === 'video' ? id : undefined,
+            //         type.toLowerCase() === 'post' ? id : undefined,
+            //         type.toLowerCase() === 'comment' ? id : undefined
+            //     );
+            // }
         }
 
+        // Update likesCount in target
         await targetModel.findByIdAndUpdate(targetId, { likesCount });
+
+        logger.info(`User ${user._id} ${liked ? 'liked' : 'unliked'} ${type} ${id}`);
 
         return res.status(200).json(
             ApiResponse.success(
@@ -88,132 +119,169 @@ export const toggleLike = async (
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while toggling like',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in toggleLike: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while toggling like',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /likes/:type/:id/count
- * @desc Get likes count for a video/post/comment
+ * @route GET /api/v1/likes/:type/:id/count
+ * @description Get the number of likes for a video, post, or comment
  * @access Public
+ * @param {string} type - Content type ('video', 'post', or 'comment')
+ * @param {string} id - ID of the content
+ * @returns {ApiResponse} Like count
  */
 export const getLikesCount = async (
-    req: Request<{ type: 'Video' | 'Post' | 'Comment'; id: string }>,
-    res: Response<ApiResponse<{ likesCount: number } | null>>
+    req: Request<{ type: 'video' | 'post' | 'comment'; id: string }>,
+    res: Response
 ) => {
     try {
         const { type, id } = req.params;
-        const targetId = new mongoose.Types.ObjectId(id);
 
-        // Validate type and target existence
+        // Validate type
+        if (!['video', 'post', 'comment'].includes(type.toLowerCase())) {
+            throw new ApiError(400, 'Invalid type', []);
+        }
+
+        // Validate ID
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid content ID', []);
+        }
+
+        const targetId = new mongoose.Types.ObjectId(id);
+        const targetField = type.toLowerCase();
+
+        // Validate target existence
         let targetModel: any;
-        switch (type) {
-            case 'Video':
+        switch (type.toLowerCase()) {
+            case 'video':
                 targetModel = Video;
                 break;
-            case 'Post':
+            case 'post':
                 targetModel = Post;
                 break;
-            case 'Comment':
+            case 'comment':
                 targetModel = Comment;
                 break;
-            default:
-                return res.status(400).json(ApiResponse.error(400, null, 'Invalid type'));
         }
-        
+
         const target = await targetModel.findById(targetId).select('likesCount');
         if (!target) {
-            return res.status(404).json(ApiResponse.error(404, null, `${type} not found`));
+            throw new ApiError(404, `${type} not found`, []);
         }
+
+        logger.info(`Fetched likes count for ${type} ${id}`);
 
         return res.status(200).json(
             ApiResponse.success(
-                { likesCount: target.likesCount }, 
+                { likesCount: target.likesCount || 0 }, 
                 'Likes count fetched successfully',
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching likes count',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getLikesCount: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching likes count',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /likes/:type/:id/is-liked
- * @desc Check if user has liked a video/post/comment
- * @access Private
+ * @route GET /api/v1/likes/:type/:id/is-liked
+ * @description Check if the authenticated user liked a video, post, or comment
+ * @access Private (requires authentication)
+ * @param {string} type - Content type ('video', 'post', or 'comment')
+ * @param {string} id - ID of the content
+ * @returns {ApiResponse} Boolean indicating if liked
  */
 export const isLiked = async (
-    req: Request<{ type: 'Video' | 'Post' | 'Comment'; id: string }, {}, {}, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ isLiked: boolean } | null>>
+    req: Request<{ type: 'video' | 'post' | 'comment'; id: string }>,
+    res: Response
 ) => {
     try {
         const user = req.user;
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Unauthorized'));
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
 
         const { type, id } = req.params;
+
+        // Validate type
+        if (!['video', 'post', 'comment'].includes(type.toLowerCase())) {
+            throw new ApiError(400, 'Invalid type', []);
+        }
+
+        // Validate ID
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid content ID', []);
+        }
+
         const targetId = new mongoose.Types.ObjectId(id);
+        const targetField = type.toLowerCase();
 
         const like = await Like.findOne({
-            type,
-            [type.toLowerCase()]: targetId,
+            type: type.toLowerCase(),
+            [targetField]: targetId,
             likedBy: user._id,
-            isDeleted: { $ne: true }
         });
+
+        logger.info(`Checked like status for user ${user._id} on ${type} ${id}`);
 
         return res.status(200).json(
             ApiResponse.success(
-                { isLiked: !!like }, 
+                { isLiked: !!like },
                 'Like status checked successfully',
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while checking like status',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in isLiked: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while checking like status',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /likes/user
- * @desc Get items liked by the user
- * @access Private
+ * @route GET /api/v1/likes/user
+ * @description Get all content liked by the authenticated user
+ * @access Private (requires authentication)
+ * @param {string} [type] - Optional content type filter ('video', 'post', or 'comment')
+ * @returns {ApiResponse} List of liked content with pagination
  */
 export const getLikedByUser = async (
-    req: Request<{}, {}, {}, PaginationParams, { user: IUser }>,
-    res: Response<ApiResponse<{ likes: ILike[]; totalLikes: number } | null>>
+    req: Request<{}, {}, {}, PaginationParams>,
+    res: Response
 ) => {
     try {
         const user = req.user;
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
+
         const { page = 1, limit = 10, type } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const match: any = {
-            likedBy: user?._id,
-            isDeleted: { $ne: true }
-        };
-        if (type) match.type = type;
+        // Validate type if provided
+        if (type && !['video', 'post', 'comment'].includes(type.toLowerCase())) {
+            throw new ApiError(400, 'Invalid type filter', []);
+        }
+
+        const match: any = { likedBy: user._id };
+        if (type) {
+            match.type = type.toLowerCase();
+        }
 
         const likes = await Like.aggregate([
             { $match: match },
@@ -226,8 +294,16 @@ export const getLikedByUser = async (
                     localField: type?.toLowerCase() || 'video',
                     foreignField: '_id',
                     as: 'item',
-                    pipeline: [{ $project: { title: 1, thumbnail: 1 } }]
-                }
+                    pipeline: [
+                        { 
+                            $project: { 
+                                title: 1, 
+                                thumbnail: 1,
+                                content: type?.toLowerCase() === 'comment' ? 1 : undefined, 
+                            }
+                        },
+                    ],
+                },
             },
             { $unwind: { path: '$item', preserveNullAndEmptyArrays: true } }
         ]);
@@ -243,6 +319,8 @@ export const getLikedByUser = async (
             }
         };
 
+        logger.info(`Fetched liked items for user ${user._id}`);
+
         return res.status(200).json(
             ApiResponse.success(
                 { likes, totalLikes },
@@ -251,14 +329,12 @@ export const getLikedByUser = async (
                 meta
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching liked items',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getLikedByUser: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching liked items',
+            error.errors || []
         );
     }
 };

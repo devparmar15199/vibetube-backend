@@ -1,16 +1,23 @@
 import type { Request, Response } from 'express';
 import mongoose from 'mongoose';
-import { Video, type IVideo } from '../models/video.model';
+import { Video } from '../models/video.model';
 import { type IUser } from '../models/user.model';
 import { Like } from '../models/like.model';
 import { View } from '../models/view.model';
-import { ApiResponse, type ApiResponseMeta } from '../utils/apiResponse';
+import { Subscription } from '../models/subscription.model';
 import { uploadToCloudinary } from '../utils/cloudinarySetup';
+import { ApiResponse, type ApiResponseMeta } from '../utils/apiResponse';
+import { ApiError } from '../utils/apiError';
+// import { addNotificationJob } from '../queue/notificationQueue';
+import { NOTIFICATION_TYPES } from '../utils/constants';
+import logger from '../utils/logger';
 
 interface UploadVideoBody {
     title: string;
     description?: string;
     category?: string;
+    tags?: string[];
+    isPublished?: boolean;
     subscribersOnly?: boolean;
 }
 
@@ -18,6 +25,8 @@ interface UpdateVideoBody {
     title?: string;
     description?: string;
     category?: string;
+    tags?: string[];
+    isPublished?: boolean;
     subscribersOnly?: boolean;
 }
 
@@ -35,25 +44,28 @@ interface PaginationParams {
 }
 
 /**
- * @route POST /videos
- * @desc Upload a new video
- * @access Private
+ * @route POST /api/v1/videos
+ * @description Upload a new video with thumbnail
+ * @access Private (requires authentication)
+ * @param {Object} body - Video data (title, description, category, tags, isPublished, subscribersOnly)
+ * @param {File} videoFile - Video file
+ * @param {File} [thumbnail] - Optional thumbnail image
+ * @returns {ApiResponse} Created video
  */
 export const uploadVideo = async (
-    req: Request<{}, {}, UploadVideoBody, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ video: IVideo | null } | null>>
+    req: Request<{}, {}, UploadVideoBody>,
+    res: Response
 ) => {
     try {
         const user = req.user;
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Unauthorized'));
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
 
-        const { title, description, category = 'Other', subscribersOnly = false } = req.body;
+        const { title, description, category, tags, isPublished = false, subscribersOnly = false } = req.body;
 
-        // Validate required fields
         if (!title?.trim()) {
-            return res.status(400).json(
-                ApiResponse.error(400, null, 'Title is required')
-            );
+            throw new ApiError(400, 'Title is required', []);
         }
 
         const files = req.files as MulterFiles;
@@ -61,17 +73,13 @@ export const uploadVideo = async (
         const thumbnailPath = files?.thumbnail?.[0]?.path;
 
         if (!videoFilePath) {
-            return res.status(400).json(
-                ApiResponse.error(400, null, 'Video file is required')
-            );
+            throw new ApiError(400, 'Video file is required', []);
         }
 
         // Upload video to Cloudinary
         const videoResult = await uploadToCloudinary(videoFilePath, 'video');
         if (!videoResult?.secure_url) {
-            return res.status(500).json(
-                ApiResponse.error(500, null, 'Failed to upload video')
-            );
+            throw new ApiError(500, 'Failed to upload video', []);
         }
 
         // Upload or generate thumbnail
@@ -81,17 +89,24 @@ export const uploadVideo = async (
         } else {
             thumbnailResult = await uploadToCloudinary(videoFilePath, 'image', {
                 resource_type: 'video',
-                transformation: [{ quality: 'auto:good', fetch_format: 'auto' }]
+                transformation: [{ quality: 'auto:good', fetch_format: 'auto' }],
             });
         }
 
         if (!thumbnailResult?.secure_url) {
-            return res.status(500).json(
-                ApiResponse.error(500, null, 'Failed to upload thumbnail')
-            );
+            throw new ApiError(500, 'Failed to upload thumbnail', []);
         }
 
-        const duration = 100;
+        // Assume duration is provided by Cloudinary (in seconds)
+        const duration = videoResult?.duration || 100;
+
+        // Convert tag IDs to ObjectId
+        let tagIds: mongoose.Types.ObjectId[] = [];
+        if (tags && tags.length > 0) {
+            tagIds = tags
+                .filter((tagId) => mongoose.Types.ObjectId.isValid(tagId))
+                .map((tagId) => new mongoose.Types.ObjectId(tagId));
+        }
 
         const video = await Video.create({
             videoFile: videoResult.secure_url,
@@ -100,119 +115,155 @@ export const uploadVideo = async (
             title: title.trim(),
             description: description?.trim() || '',
             duration,
-            category,
+            category: category || 'Other',
+            tags: tagIds,
             subscribersOnly,
+            isPublished,
             views: 0,
             likesCount: 0,
             commentsCount: 0,
-            isPublished: false,
-            isDeleted: false,
         });
 
-        // Fetch video with owner
+        // Notify subscribers if published
+        if (isPublished) {
+            const subscribers = await Subscription.find({ channel: user._id })
+                .select('subscriber')
+                .lean();
+            // const subscriberIds = subscribers.map((sub) => sub.subscriber.toString());
+            // const message = `${user.username} uploaded a new video: ${title}!`;
+            // for (const subscriberId of subscriberIds) {
+            //     await addNotificationJob(
+            //         subscriberId,
+            //         NOTIFICATION_TYPES[3],
+            //         user._id.toString(),
+            //         message,
+            //         (String(video._id)),
+            //         undefined,
+            //         undefined
+            //     );
+            // }
+        }
+
+        // Fetch video with owner details
         const uploadedVideo = await Video.findById(video._id)
-            .populate('ownerDetails', 'username fullName avatar subscribersCount');
+            .populate('owner', 'username fullName avatar subscribersCount')
+            .lean();
+
+        logger.info(`Video ${video._id} uploaded by user ${user._id}`);
 
         return res.status(201).json(
             ApiResponse.success(
-                { video: uploadedVideo }, 
+                { video: uploadedVideo },
                 'Video uploaded successfully',
                 201
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null, 
-                'Internal Server Error while uploading video',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in uploadVideo: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while uploading video',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /videos/:videoId
- * @desc Get video by ID
+ * @route GET /api/v1/videos/:videoId
+ * @description Get a specific video by ID
  * @access Public
+ * @param {string} videoId - Video ID
+ * @returns {ApiResponse} Video details
  */
 export const getVideoById = async (
     req: Request<{ videoId: string }, {}, {}, {}, { user?: IUser }>,
-    res: Response<ApiResponse<{ video: IVideo | null; owner: IUser | null } | null>>
+    res: Response
 ) => {
     try {
         const { videoId } = req.params;
-        const userId = req.user?._id;
+        const user = req.user;
+
+        // Validate video ID
+        if (!mongoose.Types.ObjectId.isValid(videoId)) {
+            throw new ApiError(400, 'Invalid video ID', []);
+        }
 
         const videoObjectId = new mongoose.Types.ObjectId(videoId);
 
         const video = await Video.findById(videoObjectId)
-            .populate('ownerDetails', 'username fullName avatar subscribersCount isEmailVerified');
+            .populate('owner', 'username fullName avatar subscribersCount')
+            .lean();
 
         if (!video) {
-            return res.status(404).json(
-                ApiResponse.error(404, null, 'Video not found')
-            );
+            throw new ApiError(404, 'Video not found', []);
         }
 
-        // Increment view
-        const viewerId = userId || null;
-        const ipAddress = req.ip || req.headers['x-forwarded-for'] as string || null;
-        const viewKey = viewerId ? { video: videoObjectId, viewer: viewerId } : { video: videoObjectId, ipAddress }
-        
+        // Check access for subscribers-only videos
+        if (video.subscribersOnly && !user) {
+            throw new ApiError(401, 'Authentication required to view this video', []);
+        }
+        if (video.subscribersOnly && user) {
+            const isSubscriber = await Subscription.findOne({
+                subscriber: user._id,
+                channel: video.owner,
+            });
+            if (!isSubscriber) {
+                throw new ApiError(403, 'You must be a subscriber to view this video', []);
+            }
+        }
+
+        // Increment view if not viewed recently
+        const viewerId = user?._id || null;
+        const ipAddress = req.ip || (req.headers['x-forwarded-for'] as string) || null;
+        const viewKey = viewerId ? { video: videoObjectId, viewer: viewerId } : { video: videoObjectId, ipAddress };
+
         const existingView = await View.findOne(viewKey);
         if (!existingView) {
-            await View.create({
-                video: videoObjectId,
-                ...(viewerId && { viewer: viewerId }),
-                ...(ipAddress && { ipAddress })
-            });
+            await Promise.all([
+                View.create({
+                    video: videoObjectId,
+                    ...(viewerId && { viewer: viewerId }),
+                    ...(ipAddress && { ipAddress }),
+                }),
+                Video.findByIdAndUpdate(videoObjectId, { $inc: { views: 1 } }),
+            ]);
         }
 
-        const response = {
-            video,
-            owner: video.ownerDetails as IUser
-        };
+        logger.info(`Fetched video ${videoId} for viewer ${viewerId || ipAddress}`);
 
         return res.status(200).json(
             ApiResponse.success(
-                response,
+                { video, owner: video.owner },
                 'Video fetched successfully',
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null, 
-                'Internal Server Error while fetching video',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getVideoById: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching video',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /videos
- * @desc Get all videos
+ * @route GET /api/v1/videos
+ * @description Get all published videos
  * @access Public
+ * @returns {ApiResponse} List of videos with pagination
  */
 export const getAllVideos = async (
     req: Request<{}, {}, {}, PaginationParams>,
-    res: Response<ApiResponse<{ videos: IVideo[]; totalVideos: number } | null>>
+    res: Response
 ) => {
     try {
         const { page = 1, limit = 10, search = '', category, sortBy = 'publishedAt' } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const filter: any = {
-            isPublished: true,
-            isDeleted: { $ne: true }
-        };
-
-        if (search) filter.title = { $regex: search, $options: 'i' };
+        const filter: any = { isPublished: true };
+        if (search) filter.title = { $regex: search.trim(), $options: 'i' };
         if (category) filter.category = category;
 
         const videos = await Video.aggregate([
@@ -222,14 +273,23 @@ export const getAllVideos = async (
                     from: 'users',
                     localField: 'owner',
                     foreignField: '_id',
-                    as: 'ownerDetails',
-                    pipeline: [
-                        { $match: { isDeleted: { $ne: true } } },
-                        { $project: { username: 1, fullName: 1, avatar: 1 } }
-                    ]
-                }
+                    as: 'owner',
+                    pipeline: [{ $project: { username: 1, fullName: 1, avatar: 1 } }],
+                },
             },
-            { $unwind: '$ownerDetails' },
+            { $unwind: '$owner' },
+            {
+                $project: {
+                    title: 1,
+                    thumbnail: 1,
+                    duration: 1,
+                    views: 1,
+                    likesCount: 1,
+                    createdAt: 1,
+                    publishedAt: 1,
+                    owner: '$owner',
+                },
+            },
             { $sort: { [sortBy]: -1 } },
             { $skip: skip },
             { $limit: Number(limit) }
@@ -246,6 +306,8 @@ export const getAllVideos = async (
             }
         };
         
+        logger.info(`Fetched ${totalVideos} videos with page ${Number(page)} and limit ${Number(limit)}`);
+
         return res.status(200).json(
             ApiResponse.success(
                 { videos, totalVideos },
@@ -254,58 +316,78 @@ export const getAllVideos = async (
                 meta
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching videos',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getAllVideos: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching videos',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route PATCH /videos/:videoId
- * @desc Update video details
- * @access Private
+ * @route PATCH /api/v1/videos/:videoId
+ * @description Update a video's details
+ * @access Private (requires authentication)
+ * @param {string} videoId - Video ID
+ * @param {Object} body - Updated video data
+ * @returns {ApiResponse} Updated video
  */
 export const updateVideo = async (
-    req: Request<{ videoId: string }, {}, UpdateVideoBody, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ video: IVideo | null } | null>>
+    req: Request<{ videoId: string }, {}, UpdateVideoBody>,
+    res: Response
 ) => {
     try {
         const user = req.user;
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
+
         const { videoId } = req.params;
-        const { title, description, category, subscribersOnly = false } = req.body;
+        const { title, description, category, tags, subscribersOnly } = req.body;
+
+        // Validate video ID
+        if (!mongoose.Types.ObjectId.isValid(videoId)) {
+            throw new ApiError(400, 'Invalid video ID', []);
+        }
 
         const videoObjectId = new mongoose.Types.ObjectId(videoId);
 
-        const video = await Video.findOne({
-            _id: videoObjectId,
-            owner: user?._id,
-            isDeleted: { $ne: true }
-        });
-
+        const video = await Video.findOne({ _id: videoObjectId, owner: user._id });
         if (!video) {
-            return res.status(404).json(
-                ApiResponse.error(404, null, 'Video not found or access denied')
-            );
+            throw new ApiError(404, 'Video not found or access denied', []);
+        }
+
+        // Convert tag IDs to ObjectId
+        let tagIds: mongoose.Types.ObjectId[] = video.tags;
+        if (tags) {
+            tagIds = tags
+                .filter((tagId) => mongoose.Types.ObjectId.isValid(tagId))
+                .map((tagId) => new mongoose.Types.ObjectId(tagId));
         }
 
         const updatedData: any = {
             title: title?.trim() || video.title,
             description: description?.trim() || video.description,
             category: category || video.category,
-            subscribersOnly: subscribersOnly || video.subscribersOnly,
+            tags: tagIds,
+            subscribersOnly: subscribersOnly !== undefined ? subscribersOnly : video.subscribersOnly,
         };
 
         const updatedVideo = await Video.findByIdAndUpdate(
             videoObjectId,
             { $set: updatedData },
             { new: true, runValidators: true }
-        ).populate('ownerDetails', 'username fullName avatar');
+        )
+        .populate('owner', 'username fullName avatar')
+        .lean();
+
+        if (!updatedVideo) {
+            throw new ApiError(404, 'Video not found', []);
+        }
+
+        logger.info(`Video ${videoId} updated by user ${user._id}`);
 
         return res.status(200).json(
             ApiResponse.success(
@@ -314,94 +396,101 @@ export const updateVideo = async (
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while updating video',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in updateVideo: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while updating video',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route DELETE /videos/:videoId
- * @desc Delete a video (soft delete)
- * @access Private
+ * @route DELETE /api/v1/videos/:videoId
+ * @description Delete a video
+ * @access Private (requires authentication)
+ * @param {string} videoId - Video ID
+ * @returns {ApiResponse} Success message
  */
 export const deleteVideo = async (
-    req: Request<{ videoId: string }, {}, {}, {}, { user: IUser }>,
-    res: Response<ApiResponse<{} | null>>
+    req: Request<{ videoId: string }>,
+    res: Response
 ) => {
     try {
         const user = req.user;
-        const { videoId } = req.params;
-        const videoObjectId = new mongoose.Types.ObjectId(videoId);
-
-        const video = await Video.findOneAndUpdate(
-            { 
-                _id: videoObjectId, 
-                owner: user?._id,
-                isDeleted: { $ne: true }
-            },
-            { 
-                isDeleted: true,
-                deletedAt: new Date()
-            },
-            { new: true }
-        );
-
-        if (!video) {
-            return res.status(404).json(
-                ApiResponse.error(404, null, 'Video not found or access denied')
-            );
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
         }
 
+        const { videoId } = req.params;
+
+        // Validate video ID
+        if (!mongoose.Types.ObjectId.isValid(videoId)) {
+            throw new ApiError(400, 'Invalid video ID', []);
+        }
+
+        const videoObjectId = new mongoose.Types.ObjectId(videoId);
+
+        const video = await Video.findOneAndDelete({ _id: videoObjectId, owner: user._id });
+        if (!video) {
+            throw new ApiError(404, 'Video not found or access denied', []);
+        }
+
+        // Delete associated likes and views
+        await Promise.all([
+            Like.deleteMany({ video: videoObjectId }),
+            View.deleteMany({ video: videoObjectId }),
+        ]);
+
+        logger.info(`Video ${videoId} deleted by user ${user._id}`);
+
         return res.status(200).json(
-            ApiResponse.success({}, 'Video deleted successfully', 200)
-        );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while deleting video',
-                error instanceof Error ? [error.message] : []
+            ApiResponse.success(
+                {},
+                'Video deleted successfully',
+                200
             )
+        );
+    } catch (error: any) {
+        logger.error(`Error in deleteVideo: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while deleting video',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route POST /videos/:videoId/publish
- * @desc Toggle publication status of a video
- * @access Private
+ * @route POST /api/v1/videos/:videoId/publish
+ * @description Toggle the publish status of a video
+ * @access Private (requires authentication)
+ * @param {string} videoId - Video ID
+ * @returns {ApiResponse} Updated video
  */
 export const togglePublishStatus = async (
-    req: Request<{ videoId: string }, {}, {}, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ isPublished: boolean; video: IVideo | null } | null>>
+    req: Request<{ videoId: string }>,
+    res: Response
 ) => {
     try {
         const user = req.user;
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Unauthorized'));
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
 
         const { videoId } = req.params;
+
+        // Validate video ID
+        if (!mongoose.Types.ObjectId.isValid(videoId)) {
+            throw new ApiError(400, 'Invalid video ID', []);
+        }
+
         const videoObjectId = new mongoose.Types.ObjectId(videoId);
 
-        const video = await Video.findOne(
-            { 
-                _id: videoObjectId, 
-                owner: user?._id, 
-                isDeleted: { $ne: true } 
-            }
-        );
-
+        const video = await Video.findOne({ _id: videoObjectId, owner: user._id });
         if (!video) {
-            return res.status(404).json(
-                ApiResponse.error(404, null, 'Video not found or access denied')
-            );
+            throw new ApiError(404, 'Video not found or access denied', []);
         }
 
         const newStatus = !video.isPublished;
@@ -414,7 +503,35 @@ export const togglePublishStatus = async (
             videoObjectId,
             { $set: updatedData },
             { new: true }
-        ).populate('ownerDetails', 'username fullName avatar');
+        )
+        .populate('owner', 'username fullName avatar')
+        .lean();
+
+        if (!updatedVideo) {
+            throw new ApiError(404, 'Video not found', []);
+        }
+
+        // Notify subscribers if published
+        if (newStatus) {
+            const subscribers = await Subscription.find({ channel: user._id })
+                .select('subscriber')
+                .lean();
+            // const subscriberIds = subscribers.map((sub) => sub.subscriber.toString());
+            // const message = `${user.username} uploaded a new video: ${video.title}!`;
+            // for (const subscriberId of subscriberIds) {
+            //     await addNotificationJob(
+            //         subscriberId,
+            //         NOTIFICATION_TYPES[3],
+            //         user._id.toString(),
+            //         message,
+            //         (String(video._id)),
+            //         undefined,
+            //         undefined
+            //     );
+            // }
+        }
+
+        logger.info(`Video ${videoId} ${newStatus ? 'published' : 'unpublished'} by user ${user._id}`);
 
         return res.status(200).json(
             ApiResponse.success(
@@ -423,213 +540,12 @@ export const togglePublishStatus = async (
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while toggling publish status',
-                error instanceof Error ? [error.message] : []
-            )
-        );
-    }
-};
-
-/**
- * @route GET /videos/users/:userId/videos
- * @desc Get videos by user ID
- * @access Public
- */
-export const getUserVideos = async (
-    req: Request<{ userId: string }, {}, {}, PaginationParams>,
-    res: Response<ApiResponse<{ videos: IVideo[]; totalVideos: number } | null>>
-) => {
-    try {
-        const { userId } = req.params;
-        const { page = 1, limit = 10 } = req.query;
-        const skip = (Number(page) - 1) * Number(limit);
-        const ownerObjectId = new mongoose.Types.ObjectId(userId);
-
-        const match: any = {
-            owner: ownerObjectId,
-            isPublished: true,
-            isDeleted: { $ne: true }
-        };
-
-        const videos = await Video.aggregate([
-            { $match: match },
-            {
-                $lookup: {
-                    from: 'users',
-                    localField: 'owner',
-                    foreignField: '_id',
-                    as: 'ownerDetails',
-                    pipeline: [
-                        { $match: { isDeleted: { $ne: true } } },
-                        { $project: { username: 1, fullName: 1, avatar: 1 } }
-                    ]
-                }
-            },
-            { $unwind: '$ownerDetails' },
-            {
-                $project: {
-                    title: 1,
-                    thumbnail: 1,
-                    duration: 1,
-                    views: 1,
-                    likesCount: 1,
-                    createdAt: 1,
-                    owner: '$ownerDetails'
-                }
-            },
-            { $sort: { publishedAt: -1 } },
-            { $skip: skip },
-            { $limit: Number(limit) }
-        ]);
-
-        const totalVideos = await Video.countDocuments(match);
-
-        const meta: ApiResponseMeta = {
-            pagination: {
-                current: Number(page),
-                pageSize: Number(limit),
-                total: totalVideos,
-                totalPages: Math.ceil(totalVideos / Number(limit))
-            }
-        };
-
-        return res.status(200).json(
-            ApiResponse.success(
-                { videos, totalVideos },
-                `${totalVideos} videos found`,
-                200,
-                meta
-            )
-        );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching user videos',
-                error instanceof Error ? [error.message] : []
-            )
-        );
-    }
-};
-
-/**
- * @route POST /videos/:videoId/like
- * @desc Like or unlike a video
- * @access Private
- */
-export const toggleLike  = async (
-    req: Request<{ videoId: string }, {}, {}, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ liked: boolean; likesCount: number } | null>>
-) => {
-    try {
-        const user = req.user;
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Unauthorized'));
-
-        const { videoId } = req.params;
-        const videoObjectId = new mongoose.Types.ObjectId(videoId);
-
-        const video = await Video.findById(videoObjectId);
-        if (!video) {
-            return res.status(404).json(
-                ApiResponse.error(404, null, 'Video not found')
-            );
-        }
-
-        // Check existing like
-        const existingLike = await Like.findOne({
-            type: 'Video',
-            video: videoObjectId,
-            likedBy: user._id,
-            isDeleted: { $ne: true }
-        });
-
-        let liked = false;
-        let likesCount = video.likesCount;
-
-        if (existingLike) {
-            // Unlike
-            await Promise.all([
-                Like.findByIdAndUpdate(existingLike._id, {
-                    isDeleted: true,
-                    deletedAt: new Date()
-                }),
-                Video.findByIdAndUpdate(videoObjectId, { $inc: { likesCount: -1 } })
-            ]);
-            likesCount--;
-        } else {
-            // Like
-            await Promise.all([
-                Like.create({
-                    type: 'Video',
-                    video: videoObjectId,
-                    likedBy: user._id
-                }),
-                Video.findByIdAndUpdate(videoObjectId, { $inc: { likesCount: 1 } })
-            ]);
-            liked = true;
-            likesCount++;
-        }
-
-        return res.status(200).json(
-            ApiResponse.success(
-                { liked, likesCount },
-                `Video ${liked ? 'liked' : 'unliked'} successfully`,
-                200
-            )
-        );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while toggling like status',
-                error instanceof Error ? [error.message] : []
-            )
-        );
-    }
-};
-
-/**
- * @route GET /videos/:videoId/likes
- * @desc Get likes count for a video
- * @access Public
- */
-export const getLikesCount = async (
-    req: Request<{ videoId: string }>,
-    res: Response<ApiResponse<{ likesCount: number } | null>>
-) => {
-    try {
-        const { videoId } = req.params;
-        const videoObjectId = new mongoose.Types.ObjectId(videoId);
-
-        const video = await Video.findById(videoObjectId).select('likesCount');
-        if (!video) {
-            return res.status(404).json(
-                ApiResponse.error(404, null, 'Video not found')
-            );
-        }
-
-        return res.status(200).json(
-            ApiResponse.success(
-                { likesCount: video.likesCount },
-                'Likes count fetched successfully',
-                200
-            )
-        )
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching likes count',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in togglePublishStatus: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while toggling publish status',
+            error.errors || []
         );
     }
 };

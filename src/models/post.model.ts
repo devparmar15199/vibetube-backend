@@ -1,5 +1,6 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import mongooseAggregatePaginate from 'mongoose-aggregate-paginate-v2';
+import { config } from '../config';
 
 /**
  * Interface for Post document. (social feed feature)
@@ -10,18 +11,18 @@ export interface IPost extends Document {
     owner: mongoose.Types.ObjectId;
     likesCount: number;
     commentsCount: number;
-    isDeleted: boolean;
-    deletedAt?: Date;
 }
 
-// Schema definition
+/**
+ * Mongoose schema for Post model.
+ */
 const postSchema = new Schema<IPost>({
     content: {
         type: String,
         required: [true, 'Post content is required'],
         maxLength: [1000, 'Post cannot exceed 1000 characters'],
         trim: true,
-        index: 'text',  // For search/timeline
+        index: 'text',
     },
     owner: {
         type: Schema.Types.ObjectId,
@@ -39,42 +40,33 @@ const postSchema = new Schema<IPost>({
         default: 0, 
         min: 0 
     },
-    isDeleted: { 
-        type: Boolean, 
-        default: false 
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
     timestamps: true,
-    autoIndex: process.env.NODE_ENV === 'development', 
+    autoIndex: config.nodeEnv === 'development', 
 });
 
 // Indexes
 postSchema.index({ owner: 1, createdAt: -1 });  // User posts
 postSchema.index({ createdAt: -1 });  // Global timeline (descending)
-postSchema.index({ isDeleted: 1 });
 
-// Post-save: Could notify followers
-postSchema.post('save', function (doc) {
-    if (doc.isNew) console.log(`New post by ${doc.owner}`);
+// Pre-deleteOne: Clean up related data
+postSchema.pre('deleteOne', { document: true, query: false }, async function (next) {
+    try {
+        await mongoose.model('Like').deleteMany({ post: this._id });
+        next();
+    } catch (error) {
+        next(error as Error);
+    }
 });
 
 // Pagination
 postSchema.plugin(mongooseAggregatePaginate);
 
-// Soft delete
-postSchema.pre(['find', 'findOne', 'findOneAndUpdate'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
-    next();
-});
-
 // toJSON
 postSchema.methods.toJSON = function () {
     const obj = this.toObject();
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 

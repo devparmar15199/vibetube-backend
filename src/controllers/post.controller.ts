@@ -1,8 +1,9 @@
 import type { Request, Response } from 'express';
 import mongoose from 'mongoose';
-import { Post, type IPost } from '../models/post.model';
+import { Post } from '../models/post.model';
 import { ApiResponse, type ApiResponseMeta } from '../utils/apiResponse';
-import type { IUser } from '../models/user.model';
+import { ApiError } from '../utils/apiError';
+import logger from '../utils/logger';
 
 interface CreatePostBody {
     content: string;
@@ -14,22 +15,27 @@ interface PaginationParams {
 }
 
 /**
- * @route POST /posts
- * @desc Create a new post
- * @access Private
+ * @route POST /api/v1/posts
+ * @description Create a new post
+ * @access Private (requires authentication)
+ * @param {Object} body - Post data (content)
+ * @returns {ApiResponse} Created post
  */
 export const createPost = async (
-    req: Request<{}, {}, CreatePostBody, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ post: IPost | null } | null>>
+    req: Request<{}, {}, CreatePostBody>,
+    res: Response
 ) => {
     try {
-        const user = req.user;
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Unauthorized'));
+const user = req.user;
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
 
         const { content } = req.body;
 
+        // Validation is handled by middleware, but double-check content
         if (!content?.trim()) {
-            return res.status(400).json(ApiResponse.error(400, null, 'Post content is required'));
+            throw new ApiError(400, 'Post content is required', []);
         }
 
         const post = await Post.create({
@@ -37,192 +43,222 @@ export const createPost = async (
             owner: user._id,
             likesCount: 0,
             commentsCount: 0,
-            isDeleted: false,
         });
 
         // Populate owner
         const populatedPost = await Post.findById(post._id)
-            .populate('owner', 'username avatar');
+            .populate('owner', 'username avatar fullName');
+            
+        logger.info(`Post ${post._id} created by user ${user._id}`);
 
         return res.status(201).json(
             ApiResponse.success(
-                { post: populatedPost }, 
+                { post: populatedPost },
                 'Post created successfully',
                 201
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while creating post',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in createPost: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while creating post',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route PATCH /posts/:id
- * @desc Update a post
- * @access Private
+ * @route PATCH /api/v1/posts/:id
+ * @description Update a post's content
+ * @access Private (requires authentication)
+ * @param {string} id - Post ID
+ * @param {Object} body - Updated post data (content)
+ * @returns {ApiResponse} Updated post
  */
 export const updatePost = async (
-    req: Request<{ id: string }, {}, CreatePostBody, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ post: IPost | null } | null>>
+    req: Request<{ id: string }, {}, CreatePostBody>,
+    res: Response
 ) => {
     try {
         const user = req.user;
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
+
         const { id } = req.params;
         const { content } = req.body;
 
+        // Validation is handled by middleware, but double-check content
         if (!content?.trim()) {
-            return res.status(400).json(ApiResponse.error(400, null, 'Updated content is required'));
+            throw new ApiError(400, 'Updated content is required', []);
         }
 
-        const postId = new mongoose.Types.ObjectId(id);
-
-        const post = await Post.findByIdAndUpdate(
-            {
-                _id: postId,
-                owner: user?._id,
-                isDeleted: { $ne: true }
-            },
-            { content: content.trim() },
-            { new: true, runValidators: true }
-        ).populate('owner', 'username avatar');
-
-        if (!post) {
-            return res.status(404).json(ApiResponse.error(404, null, 'Post not found'));
+        // Validate post ID
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid post ID', []);
         }
-
-        return res.status(200).json(
-            ApiResponse.success(
-                { post }, 
-                'Post updated successfully',
-                200
-            )
-        );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while updating post',
-                error instanceof Error ? [error.message] : []
-            )
-        );
-    }
-};
-
-/**
- * @route DELETE /posts/:id
- * @desc Delete a post
- * @access Private
- */
-export const deletePost = async (
-    req: Request<{ id: string }, {}, {}, {}, { user: IUser }>,
-    res: Response<ApiResponse<{} | null>>
-) => {
-    try {
-        const user = req.user;
-        const { id } = req.params;
 
         const postId = new mongoose.Types.ObjectId(id);
 
         const post = await Post.findOneAndUpdate(
             {
                 _id: postId,
-                owner: user?._id,
-                isDeleted: { $ne: true }
+                owner: user._id,
             },
-            { isDeleted: true, deletedAt: new Date() },
-            { new: true }
-        );
-
+            { content: content.trim() },
+            { new: true, runValidators: true }
+        ).populate('owner', 'username avatar fullName');
+        
         if (!post) {
-            return res.status(404).json(ApiResponse.error(404, null, 'Post not found'));
+            throw new ApiError(404, 'Post not found or you do not own it', []);
         }
+
+        logger.info(`Post ${id} updated by user ${user._id}`);
 
         return res.status(200).json(
             ApiResponse.success(
-                {}, 
+                { post },
+                'Post updated successfully',
+                200
+            )
+        );
+    } catch (error: any) {
+        logger.error(`Error in updatePost: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while updating post',
+            error.errors || []
+        );
+    }
+};
+
+/**
+ * @route DELETE /api/v1/posts/:id
+ * @description Delete a post
+ * @access Private (requires authentication)
+ * @param {string} id - Post ID
+ * @returns {ApiResponse} Success message
+ */
+export const deletePost = async (
+    req: Request<{ id: string }>,
+    res: Response
+) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
+
+        const { id } = req.params;
+
+        // Validate post ID
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid post ID', []);
+        }
+
+        const postId = new mongoose.Types.ObjectId(id);
+
+        const post = await Post.findOneAndDelete({
+            _id: postId,
+            owner: user._id,
+        });
+
+        if (!post) {
+            throw new ApiError(404, 'Post not found or you do not own it', []);
+        }
+
+        logger.info(`Post ${id} deleted by user ${user._id}`);
+
+        return res.status(200).json(
+            ApiResponse.success(
+                {},
                 'Post deleted successfully',
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while deleting post',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in deletePost: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while deleting post',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /posts/:id
- * @desc Get post by ID
+ * @route GET /api/v1/posts/:id
+ * @description Get a specific post by ID
  * @access Public
+ * @param {string} id - Post ID
+ * @returns {ApiResponse} Post details
  */
 export const getPostById = async (
     req: Request<{ id: string }>,
-    res: Response<ApiResponse<{ post: IPost | null } | null>>
+    res: Response
 ) => {
     try {
         const { id } = req.params;
+
+        // Validate post ID
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid post ID', []);
+        }
+
         const postId = new mongoose.Types.ObjectId(id);
 
         const post = await Post.findById(postId)
-            .populate('owner', 'username avatar')
-            .where({ isDeleted: { $ne: true } });
+            .populate('owner', 'username avatar fullName')
+            .lean();
 
         if (!post) {
-            return res.status(404).json(ApiResponse.error(404, null, 'Post not found'));
+            throw new ApiError(404, 'Post not found', []);
         }
+
+        logger.info(`Fetched post ${id}`);
 
         return res.status(200).json(
             ApiResponse.success(
-                { post }, 
+                { post },
                 'Post fetched successfully',
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching post',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getPostById: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching post',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /posts/users/:userId
- * @desc Get user's posts
+ * @route GET /api/v1/posts/users/:userId
+ * @description Get posts by a specific user
  * @access Public
+ * @param {string} userId - User ID
+ * @returns {ApiResponse} List of user's posts with pagination
  */
 export const getUserPosts = async (
     req: Request<{ userId: string }, {}, {}, PaginationParams>,
-    res: Response<ApiResponse<{ posts: IPost[]; totalPosts: number } | null>>
+    res: Response
 ) => {
     try {
         const { userId } = req.params;
         const { page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+
+        // Validate user ID
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+            throw new ApiError(400, 'Invalid user ID', []);
+        }
+
         const ownerId = new mongoose.Types.ObjectId(userId);
 
-        const match: any = {
-            owner: ownerId,
-            isDeleted: { $ne: true }
-        };
+        const match: any = { owner: ownerId };
 
         const posts = await Post.aggregate([
             { $match: match },
@@ -232,8 +268,8 @@ export const getUserPosts = async (
                     localField: 'owner',
                     foreignField: '_id',
                     as: 'owner',
-                    pipeline: [{ $project: { username: 1, avatar: 1 } }]
-                }
+                    pipeline: [{ $project: { username: 1, avatar: 1, fullName: 1 } }],
+                },
             },
             { $unwind: '$owner' },
             { $sort: { createdAt: -1 } },
@@ -252,45 +288,42 @@ export const getUserPosts = async (
             }
         };
 
+        logger.info(`Fetched posts for user ${userId}`);
+
         return res.status(200).json(
             ApiResponse.success(
-                { posts, totalPosts }, 
+                { posts, totalPosts },
                 'User posts fetched successfully',
                 200,
                 meta
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching user posts',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getUserPosts: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching user posts',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /posts
- * @desc Get global feed
+ * @route GET /api/v1/posts
+ * @description Get the social feed of posts
  * @access Public
+ * @returns {ApiResponse} List of posts with pagination
  */
 export const getFeed = async (
     req: Request<{}, {}, {}, PaginationParams>,
-    res: Response<ApiResponse<{ posts: IPost[]; totalPosts: number } | null>>
+    res: Response
 ) => {
     try {
-        const userId = req.user?._id;
+        const user = req.user?._id;
         const { page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const match: any = { isDeleted: { $ne: true } };
-
-        if (userId) {
-            // TODO
-        }
+        const match: any = {};
 
         const posts = await Post.aggregate([
             { $match: match },
@@ -300,8 +333,11 @@ export const getFeed = async (
                     localField: 'owner',
                     foreignField: '_id',
                     as: 'owner',
-                    pipeline: [{ $project: { username: 1, avatar: 1 } }]
-                }
+                    pipeline: [
+                        { $project: { username: 1, avatar: 1, fullName: 1 } },
+                        { $sort: { followersCount: -1 } },
+                    ],
+                },
             },
             { $unwind: '$owner' },
             { $sort: { createdAt: -1 } },
@@ -320,22 +356,22 @@ export const getFeed = async (
             }
         };
 
+        logger.info(`Fetched feed for user ${user || 'anonymous'}`);
+
         return res.status(200).json(
             ApiResponse.success(
-                { posts, totalPosts }, 
+                { posts, totalPosts },
                 'Feed fetched successfully',
                 200,
                 meta
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching feed',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getFeed: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching feed',
+            error.errors || []
         );
     }
 };

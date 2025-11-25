@@ -1,28 +1,47 @@
 import dotenv from 'dotenv';
 import connectDB from './db/dbSetup';
+import { config } from './config';
 import app from './app';
+import logger from './utils/logger';
+import cron from 'node-cron';
+// import { addAnalyticsAggregationJob } from './queue/analyticsQueue';
 
-if (!process.env.NODE_ENV) {
+if (!config.nodeEnv) {
     dotenv.config({ path: './.env' });
 }
 
 const startServer = async () => {
     try {
         await connectDB();
-        const PORT = parseInt(process.env.PORT || '3001', 10);
-        const server = app.listen(PORT, () => {
-            console.log(`Server running on http://localhost:${PORT}`);
+        const server = app.listen(config.port, () => {
+            logger.info(`Server running on http://localhost:${config.port}`);
         });
 
+        // Schedule daily analytics aggregation at midnight
+        cron.schedule('0 0 * * *', async () => {
+            try {
+                const yesterday = new Date();
+                yesterday.setHours(0, 0, 0, 0);
+                yesterday.setDate(yesterday.getDate() - 1);
+                // await addAnalyticsAggregationJob(yesterday);
+                logger.info('Daily analytics aggregation job added');
+            } catch (error: any) {
+                logger.error(`Failed to add daily analytics job: ${error.message}`);
+            }
+        }, {
+            timezone: 'UTC'
+        });
+        
         // Graceful shutdown
         process.on('SIGTERM', () => {
-            console.log('SIGTERM received. Shutting down gracefully...');
+            logger.info('SIGTERM received. Shutting down gracefully...');
             server.close(() => {
-                console.log('Process terminated.');
+                logger.info('Process terminated.');
+                process.exit(0);
             });
         });
     } catch (error: any) {
-        console.error('Failed to start server:', error.message);
+        logger.error(`Failed to start server: ${error.message}`);
         process.exit(1);
     }
 };

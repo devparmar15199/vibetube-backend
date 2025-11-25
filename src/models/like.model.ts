@@ -1,4 +1,5 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
+import { config } from '../config';
 
 /**
  * Interface for Like document (polymorphic for Video/Post/Comment).
@@ -10,17 +11,17 @@ export interface ILike extends Document {
     video?: mongoose.Types.ObjectId;
     post?: mongoose.Types.ObjectId;
     likedBy: mongoose.Types.ObjectId;
-    isDeleted: boolean;
-    deletedAt?: Date;
 }
 
-// Schema definition
+/**
+ * Mongoose Schema for Like model.
+ */
 const likeSchema = new Schema<ILike>({
     type: {
         type: String,
         enum: ['Comment', 'Video', 'Post'],
         required: true,
-        index: true,    // For type-based queries
+        index: true,
     },
     comment: {
         type: Schema.Types.ObjectId,
@@ -40,32 +41,24 @@ const likeSchema = new Schema<ILike>({
         required: true,
         index: true,
     },
-    isDeleted: { 
-        type: Boolean, 
-        default: false 
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
     timestamps: true,
-    autoIndex: process.env.NODE_ENV === 'development', 
+    autoIndex: config.nodeEnv === 'development', 
 });
 
-// Unique sparse indexes (ignore nulls for optional fields)
+// Unique sparse indexes
 likeSchema.index({ likedBy: 1, comment: 1 }, { unique: true, sparse: true });
 likeSchema.index({ likedBy: 1, video: 1 }, { unique: true, sparse: true });
 likeSchema.index({ likedBy: 1, post: 1 }, { unique: true, sparse: true });
 
-// Performance indexes for counts
+// Performance indexes
 likeSchema.index({ type: 1, video: 1 });    // Video likes
 likeSchema.index({ type: 1, post: 1 });    // Post likes
 likeSchema.index({ type: 1, comment: 1 });    // Comment likes
-likeSchema.index({ isDeleted: 1 });
 
-// Post-save: Update entity's likesCount
+// Post-save: Increment likesCount
 likeSchema.post('save', async function (doc) {
-    if (doc.isNew && !doc.isDeleted) {
+    if (doc.isNew) {
         let updateTarget: string;
         let incValue = 1;
         switch (doc.type) {
@@ -81,7 +74,6 @@ likeSchema.post('save', async function (doc) {
             default:
                 return;
         }
-        // Map field to ID
         const targetId = doc.video || doc.post || doc.comment;
         await mongoose.model(updateTarget).findByIdAndUpdate(targetId, {
             $inc: { likesCount: incValue },
@@ -89,17 +81,41 @@ likeSchema.post('save', async function (doc) {
     }
 });
 
-// Soft delete
-likeSchema.pre(['find', 'findOne', 'findOneAndUpdate'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
-    next();
+// Pre-deleteOne: Decrement likesCount
+likeSchema.pre('deleteOne', { document: true, query: false }, async function (next) {
+    try {
+        let updateTarget: string;
+        let targetId: mongoose.Types.ObjectId | undefined;
+        switch (this.type) {
+            case 'Video':
+                updateTarget = 'Video';
+                targetId = this.video;
+                break;
+            case 'Post':
+                updateTarget = 'Post';
+                targetId = this.post;
+                break;
+            case 'Comment':
+                updateTarget = 'Comment';
+                targetId = this.comment;
+                break;
+            default:
+                return next();
+        }
+        if (targetId) {
+            await mongoose.model(updateTarget).findByIdAndUpdate(targetId, { $inc: { likesCount: -1 } });
+        }
+        next();
+    } catch (error) {
+        next(error as Error);
+    }
 });
 
 // toJSON
 likeSchema.methods.toJSON = function () {
     const obj = this.toObject();
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 

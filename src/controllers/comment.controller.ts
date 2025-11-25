@@ -1,10 +1,13 @@
 import type { Request, Response } from 'express';
 import mongoose from 'mongoose';
-import { Comment, type IComment } from '../models/comment.model';
+import { Comment } from '../models/comment.model';
 import { Video } from '../models/video.model';
 import { Post } from '../models/post.model';
 import { ApiResponse, type ApiResponseMeta } from '../utils/apiResponse';
-import { type IUser } from '../models/user.model';
+import { ApiError } from '../utils/apiError';
+// import { addNotificationJob } from '../queue/notificationQueue';
+import { NOTIFICATION_TYPES } from '../utils/constants';
+import logger from '../utils/logger';
 
 interface AddCommentBody {
     content: string;
@@ -21,123 +24,158 @@ interface PaginationParams {
 }
 
 /**
- * @route POST /comments/:type/:id
- * @desc Add a comment to a video/post
- * @access Private
+ * @route POST /api/v1/comments/:type/:id
+ * @description Add a comment to a video or post
+ * @access Private (requires authentication)
+ * @param {string} type - Content type ('video' or 'post')
+ * @param {string} id - ID of the video or post
+ * @param {Object} body - Comment data (content, optional parentComment)
+ * @returns {ApiResponse} Created comment
  */
 export const addComment = async (
-    req: Request<{ type: 'Video' | 'Post'; id: string }, {}, AddCommentBody, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ comment: IComment | null } | null>>
+    req: Request<{ type: 'video' | 'post'; id: string }, {}, AddCommentBody>,
+    res: Response
 ) => {
     try {
         const user = req.user;
-        if (!user) return res.status(401).json(ApiResponse.error(401, null, 'Unauthorized'));
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
 
         const { type, id } = req.params;
         const { content, parentComment } = req.body;
 
         if (!content?.trim()) {
-            return res.status(400).json(ApiResponse.error(400, null, 'Comment content is required'));
+            throw new ApiError(400, 'Comment content is required', []);        
         }
-
-        const targetId = new mongoose.Types.ObjectId(id);
 
         // Validate type and target existence
         let targetModel: any;
         let targetField: string;
-        switch (type) {
-            case 'Video':
+        switch (type.toLowerCase()) {
+            case 'video':
                 targetModel = Video;
                 targetField = 'video';
                 break;
-            case 'Post':
+            case 'post':
                 targetModel = Post;
                 targetField = 'post';
                 break;
             default:
-                return res.status(400).json(ApiResponse.error(400, null, 'Invalid comment type'));
-        }
-        
-        const target = await targetModel.findById(targetId);
-        if (!target) {
-            return res.status(404).json(ApiResponse.error(404, null, `${type} not found`));
+                throw new ApiError(400, 'Invalid comment type', []);
         }
 
-        // Optional parent for replies
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid target ID', []);
+        }
+        
+        const target = await targetModel.findById(id);
+        if (!target) {
+            throw new ApiError(404, `${type} not found`, []);
+        }
+
+        // Validate parent comment if provided
         let parentId: mongoose.Types.ObjectId | undefined;
         if (parentComment) {
+            if (!mongoose.Types.ObjectId.isValid(parentComment)) {
+                throw new ApiError(400, 'Invalid parent comment ID', []);
+            }
             parentId = new mongoose.Types.ObjectId(parentComment);
             const parent = await Comment.findById(parentId);
             if (!parent) {
-                return res.status(404).json(ApiResponse.error(404, null, 'Parent comment not found'));
+                throw new ApiError(404, 'Parent comment not found', []);
             }
         }
 
+        // Create comment
         const comment = await Comment.create({
             content: content.trim(),
-            [targetField]: targetId,
+            [targetField]: id,
             owner: user._id,
             parentComment: parentId,
             likesCount: 0,
-            isDeleted: false,
         });
 
         // Populate owner for response
         const populatedComment = await Comment.findById(comment._id)
             .populate('owner', 'username avatar');
 
-        return res.status(200).json(
+        // Queue notification for content owner (if not the commenter)
+        // if (target.owner.toString() !== user._id.toString()) {
+        //     const message = `${user.username} commented on your ${type.toLowerCase()}: "${content.slice(0, 50)}${content.length > 50 ? '...' : ''}"`;
+        //     await addNotificationJob(
+        //         target.owner.toString(),
+        //         NOTIFICATION_TYPES[2],
+        //         user._id.toString(),
+        //         message,
+        //         type.toLowerCase() === 'video' ? id : undefined,
+        //         type.toLowerCase() === 'post' ? id : undefined,
+        //         (String(comment._id))
+        //     );
+        // }
+
+        logger.info(`Comment added by user ${user._id} on ${type} ${id}`);
+
+        return res.status(201).json(
             ApiResponse.success(
                 { comment: populatedComment }, 
                 'Comment added successfully',
-                200
+                201
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while adding comment',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in addComment: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while adding comment',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route PATCH /comments/:commentId
- * @desc Update a comment
- * @access Private
+ * @route PATCH /api/v1/comments/:commentId
+ * @description Update a comment's content
+ * @access Private (requires authentication)
+ * @param {string} commentId - ID of the comment to update
+ * @param {Object} body - Updated comment data (content)
+ * @returns {ApiResponse} Updated comment
  */
 export const updateComment = async (
-    req: Request<{ commentId: string }, {}, UpdateCommentBody, {}, { user: IUser }>,
-    res: Response<ApiResponse<{ comment: IComment | null } | null>>
+    req: Request<{ commentId: string }, {}, UpdateCommentBody>,
+    res: Response
 ) => {
     try {
         const user = req.user;
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
+        }
+
         const { commentId } = req.params;
         const { content } = req.body;
 
         if (!content?.trim()) {
-            return res.status(400).json(ApiResponse.error(400, null, 'Updated content is required'));
+            throw new ApiError(400, 'Updated content is required', []);
         }
 
-        const commentObjectId = new mongoose.Types.ObjectId(commentId);
+        if (!mongoose.Types.ObjectId.isValid(commentId)) {
+            throw new ApiError(400, 'Invalid comment ID', []);
+        }
         
         const comment = await Comment.findOneAndUpdate(
             {
-                _id: commentObjectId,
-                owner: user?._id,
-                isDeleted: { $ne: true }
+                _id: commentId,
+                owner: user._id,
             },
             { content: content.trim() },
             { new: true, runValidators: true }
         ).populate('owner', 'username avatar');
 
         if (!comment) {
-            return res.status(404).json(ApiResponse.error(404, null, 'Comment not found'));
+            throw new ApiError(404, 'Comment not found or you do not own it', []);
         }
+
+        logger.info(`Comment ${commentId} updated by user ${user._id}`);
 
         return res.status(200).json(
             ApiResponse.success(
@@ -146,99 +184,109 @@ export const updateComment = async (
                 200
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while updating comment',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in updateComment: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while updating comment',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route DELETE /comments/:commentId
- * @desc Delete a comment
- * @access Private
+ * @route DELETE /api/v1/comments/:commentId
+ * @description Delete a comment and its replies
+ * @access Private (requires authentication)
+ * @param {string} commentId - ID of the comment to delete
+ * @returns {ApiResponse} Success message
  */
 export const deleteComment = async (
-    req: Request<{ commentId: string }, {}, {}, {}, { user: IUser }>,
-    res: Response<ApiResponse<{} | null>>
+    req: Request<{ commentId: string }>,
+    res: Response
 ) => {
     try {
         const user = req.user;
-        const { commentId } = req.params;
-        const commentObjectId = new mongoose.Types.ObjectId(commentId);
-        
-        const comment = await Comment.findOneAndUpdate(
-            {
-                _id: commentObjectId,
-                owner: user?._id,
-                isDeleted: { $ne: true }
-            },
-            { isDeleted: true, deletedAt: new Date() },
-            { new: true }
-        );
-
-        if (!comment) {
-            return res.status(404).json(ApiResponse.error(404, null, 'Comment not found'));
+        if (!user) {
+            throw new ApiError(401, 'Unauthorized', []);
         }
 
+        const { commentId } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(commentId)) {
+            throw new ApiError(400, 'Invalid comment ID', []);
+        }
+        
+        const comment = await Comment.findOne({ _id: commentId, owner: user._id });
+        if (!comment) {
+            throw new ApiError(404, 'Comment not found or you do not own it', []);
+        }
+
+        // Delete comment and its replies 
+        await Comment.deleteMany({
+            $or: [
+                { _id: commentId },
+                { parentComment: commentId }
+            ],
+        });
+
+        logger.info(`Comment ${commentId} and its replies deleted by user ${user._id}`);
+
         return res.status(200).json(
-            ApiResponse.success(
-                {}, 
-                'Comment deleted successfully',
-                200
-            )
+            ApiResponse.success({}, 'Comment deleted successfully', 200)
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while deleting comment',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in deleteComment: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while deleting comment',
+            error.errors || []
         );
     }
 };
 
 /**
- * @route GET /comments/:type/:id
- * @desc Get comments for a video/post
+ * @route GET /api/v1/comments/:type/:id
+ * @description Get comments for a video or post
  * @access Public
+ * @param {string} type - Content type ('video' or 'post')
+ * @param {string} id - ID of the video or post
+ * @returns {ApiResponse} List of comments with pagination
  */
 export const getComments = async (
-    req: Request<{ type: 'Video' | 'Post'; id: string }, {}, {}, PaginationParams>,
-    res: Response<ApiResponse<{ comments: IComment[]; totalComments: number } | null>>
+    req: Request<{ type: 'video' | 'post'; id: string }, {}, {}, PaginationParams>,
+    res: Response
 ) => {
     try {
         const { type, id } = req.params;
         const { page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const targetId = new mongoose.Types.ObjectId(id);
-
+        // Validate type
         let targetField: string;
-        switch (type) {
-            case 'Video':
+        switch (type.toLowerCase()) {
+            case 'video':
                 targetField = 'video';
                 break;
-            case 'Post':
+            case 'post':
                 targetField = 'post';
                 break;
             default:
-                return res.status(400).json(ApiResponse.error(400, null, 'Invalid type'));
+                throw new ApiError(400, 'Invalid type', []);
         }
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid target ID', []);
+        }
+
+        const targetId = new mongoose.Types.ObjectId(id);
         
+        // Aggregation pipeline for top-level comments
         const comments = await Comment.aggregate([
             { 
                 $match: {
                     [targetField]: targetId,
                     parentComment: { $exists: false },
-                    isDeleted: { $ne: true }
                 }  
             },
             { $sort: { createdAt: -1 } },
@@ -274,16 +322,16 @@ export const getComments = async (
                             }
                         },
                         { $unwind: '$owner' }
-                    ]
-                }
+                    ],
+                },
             },
             { $addFields: { repliesCount: { $size: '$replies' } } }
         ]);
 
+        // Count total top-level comments
         const totalComments = await Comment.countDocuments({
             [targetField]: targetId,
             parentComment: { $exists: false },
-            isDeleted: { $ne: true }
         });
 
         const meta: ApiResponseMeta = {
@@ -291,10 +339,12 @@ export const getComments = async (
                 current: Number(page),
                 pageSize: Number(limit),
                 total: totalComments,
-                totalPages: Math.ceil(totalComments / Number(limit))
-            }
+                totalPages: Math.ceil(totalComments / Number(limit)),
+            },
         };
 
+        logger.info(`Fetched comments for ${type} ${id}`);
+        
         return res.status(200).json(
             ApiResponse.success(
                 { comments, totalComments }, 
@@ -303,14 +353,12 @@ export const getComments = async (
                 meta
             )
         );
-    } catch (error) {
-        return res.status(500).json(
-            ApiResponse.error(
-                500,
-                null,
-                'Internal Server Error while fetching comments',
-                error instanceof Error ? [error.message] : []
-            )
+    } catch (error: any) {
+        logger.error(`Error in getComments: ${error.message}`);
+        throw new ApiError(
+            error.statusCode || 500,
+            error.message || 'Internal Server Error while fetching comments',
+            error.errors || []
         );
     }
 };

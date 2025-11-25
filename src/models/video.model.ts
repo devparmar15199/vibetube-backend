@@ -1,6 +1,8 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import mongooseAggregatePaginate from 'mongoose-aggregate-paginate-v2';
 import type { IUser } from './user.model';
+import { VIDEO_CATEGORIES } from '../utils/constants';
+import { config } from '../config';
 
 /**
  * Interface for Video document.
@@ -15,12 +17,11 @@ export interface IVideo extends Document {
     views: number;  // Denormalized count (increment via View model)
     likesCount: number; // Denormalized; update atmoically from Like model
     commentsCount: number;  // Denormalized; update from Comment model
-    category: 'Music' | 'Education' | 'Comedy' | 'Sports' | 'Gaming' | 'News' | 'Entertainment' | 'Lifestyle' | 'Other';
+    category: typeof VIDEO_CATEGORIES[number];
+    tags: mongoose.Types.ObjectId[]; // References to Tag model for categorization and search
     isPublished: boolean;
     subscribersOnly: boolean;   // Restrict to channel subscribers
     publishedAt: Date;
-    isDeleted: boolean;
-    deletedAt?: Date;
 
     /**
      * Virtual for owner population.
@@ -28,10 +29,13 @@ export interface IVideo extends Document {
     ownerDetails?: IUser;
 }
 
-// Schema with validations
+/**
+ * Mongoose schema for Video model.
+ * Defines structure, validations, indexes, and hooks.
+ */
 const videoSchema = new Schema<IVideo>({
     videoFile: {
-        type: String,   // Cloudinary secure URL
+        type: String,
         required: [true, 'Video file is required'],
         trim: true,
     },
@@ -44,20 +48,20 @@ const videoSchema = new Schema<IVideo>({
         type: Schema.Types.ObjectId,
         ref: 'User',
         required: true,
-        index: true,    // For owner queries
+        index: true,
     },
     title: {
         type: String,
         required: [true, 'Title is required'],
         maxLength: [100, 'Title cannot exceed 100 characters'],
         trim: true,
-        index: 'text',  // For search
+        index: 'text',
     },
     description: {
         type: String,
         maxLength: [500, 'Description cannot exceed 500 characters'],
         trim: true,
-        index: 'text',  // For search
+        index: 'text',
     },
     duration: {
         type: Number,
@@ -81,41 +85,40 @@ const videoSchema = new Schema<IVideo>({
     },
     category: { 
         type: String,
-        enum: ['Music', 'Education', 'Comedy', 'Sports', 'Gaming', 'News', 'Entertainment', 'Lifestyle', 'Other'],
+        enum: VIDEO_CATEGORIES,
         default: 'Other',
         required: true,
-        index: true,    // For category feeds
+        index: true,
     },
+    tags: [
+        {
+            type: Schema.Types.ObjectId,
+            ref: 'Tag',
+        }
+    ],
     isPublished: { 
         type: Boolean, 
         default: true 
     },
     subscribersOnly: { 
         type: Boolean, 
-        default: false 
+        default: false,
     },
     publishedAt: { 
         type: Date, 
-        default: Date.now   // Set on publish 
+        default: Date.now, 
     },
-    isDeleted: { 
-        type: Boolean, 
-        default: false 
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
     timestamps: true,
-    autoIndex: process.env.NODE_ENV === 'development' 
+    autoIndex: config.nodeEnv === 'development' 
 });
 
-// Compound indexes for feeds and searches
+// Compound indexes
 videoSchema.index({ owner: 1, createdAt: -1 }); // User's video list
 videoSchema.index({ category: 1, createdAt: -1 }); // Category-based feeds
 videoSchema.index({ isPublished: 1, publishedAt: -1 }); // Published/recent videos
 videoSchema.index({ subscribersOnly: 1, owner: 1 });  // Premium content per channel
-videoSchema.index({ isDeleted: 1 });
+videoSchema.index({ tags: 1, createdAt: -1 });  // Tag-based searches
 videoSchema.index({ title: 'text', description: 'text' });  // Full-text search
 
 // Virtual for owner
@@ -134,20 +137,27 @@ videoSchema.pre('save', function (next) {
     next();
 });
 
-// Pagination plugin for aggregate queries
-videoSchema.plugin(mongooseAggregatePaginate);
-
-// Soft delete filter
-videoSchema.pre(['find', 'findOne', 'findOneAndUpdate', 'countDocuments'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
-    next();
+// Pre-deleteOne: Clean up related data
+videoSchema.pre('deleteOne', { document: true, query: false }, async function (next) {
+    try {
+        await mongoose.model('Analytics').deleteMany({ video: this._id });
+        await mongoose.model('View').deleteMany({ video: this._id });
+        await mongoose.model('Comment').deleteMany({ video: this._id });
+        await mongoose.model('Like').deleteMany({ video: this._id });
+        next();
+    } catch (error) {
+        next(error as Error);
+    }
 });
 
-// toJSON transform
+// Pagination plugin
+videoSchema.plugin(mongooseAggregatePaginate);
+
+// toJSON: Add id and exclude __v
 videoSchema.methods.toJSON = function () {
     const obj = this.toObject();
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 

@@ -1,5 +1,6 @@
-import mongoose, { Schema, Document, type QueryWithHelpers } from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 import mongooseAggregatePaginate from 'mongoose-aggregate-paginate-v2';
+import { config } from '../config';
 
 /**
  * Interface for Comment document.
@@ -12,8 +13,6 @@ export interface IComment extends Document {
     owner: mongoose.Types.ObjectId;
     likesCount: number;
     parentComment?: mongoose.Types.ObjectId; // For replies
-    isDeleted: boolean;
-    deletedAt?: Date;
 
     /**
      * Virtual for replies count.
@@ -21,7 +20,9 @@ export interface IComment extends Document {
     repliesCount?: number;
 }
 
-// Schema definition
+/**
+ * Mongoose schema for Comment model.
+ */
 const commentSchema = new Schema<IComment>({
     content: {
         type: String,
@@ -33,13 +34,13 @@ const commentSchema = new Schema<IComment>({
         type: Schema.Types.ObjectId,
         ref: 'Video',
         required: true,
-        index: true,    // For video comments
+        index: true,
     },
     owner: {
         type: Schema.Types.ObjectId,
         ref: 'User',
         required: true,
-        index: true,    // For user comments
+        index: true,
     },
     likesCount: { 
         type: Number, 
@@ -50,25 +51,17 @@ const commentSchema = new Schema<IComment>({
         type: Schema.Types.ObjectId,
         ref: 'Comment',
     },
-    isDeleted: { 
-        type: Boolean, 
-        default: false 
-    },
-    deletedAt: {
-        type: Date,
-    }
 }, { 
     timestamps: true,
-    autoIndex: process.env.NODE_ENV === 'development', 
+    autoIndex: config.nodeEnv === 'development', 
 });
 
 // Indexes
 commentSchema.index({ video: 1, createdAt: -1 });   // Video's comments (sorted)
 commentSchema.index({ parentComment: 1, createdAt: -1 }); // Threaded replies
 commentSchema.index({ owner: 1, createdAt: -1 }); // User's comments
-commentSchema.index({ isDeleted: 1 });
 
-// Virtual for replies (sub-comments)
+// Virtual for replies count
 commentSchema.virtual('repliesCount', {
     ref: 'Comment',
     localField: '_id',
@@ -76,29 +69,34 @@ commentSchema.virtual('repliesCount', {
     count: true,
 })
 
-// Post-save: Increment video's commentsCount
+// Post-save: Increment commentsCount
 commentSchema.post('save', async function (doc) {
-    if (doc.isNew && !doc.isDeleted) {
+    if (doc.isNew) {
         await mongoose.model('Video').findByIdAndUpdate(doc.video, {
             $inc: { commentsCount: 1 },
         });
     }
 });
 
-// Pagination for comment threads
-commentSchema.plugin(mongooseAggregatePaginate);
-
-// Soft delete
-commentSchema.pre(['find', 'findOne', 'findOneAndUpdate'], function (next) {
-    (this as QueryWithHelpers<unknown, Document>).find({ isDeleted: { $ne: true } });
-    next();
+// Pre-deleteOne: Decrement commentsCount and delete replies
+commentSchema.pre('deleteOne', { document: true, query: false }, async function (next) {
+    try {
+        await mongoose.model('Video').findByIdAndUpdate(this.video, { $inc: { commentsCount: -1 } });
+        await mongoose.model('Comment').deleteMany({ parentComment: this._id });
+        next();
+    } catch (error) {
+        next(error as Error);
+    }
 });
+
+// Pagination
+commentSchema.plugin(mongooseAggregatePaginate);
 
 // toJSON
 commentSchema.methods.toJSON = function () {
     const obj = this.toObject();
-    delete obj.isDeleted;
-    delete obj.deletedAt;
+    delete obj.__v;
+    obj.id = obj._id;
     return obj;
 };
 
